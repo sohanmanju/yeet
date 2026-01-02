@@ -1,37 +1,31 @@
-"""Visual space map showing how storage is distributed."""
+"""Visual space map (treemap/heatmap) showing how storage is distributed."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Sequence
 
-from rich.console import Console, RenderableType
-from rich.panel import Panel
+from rich.console import Console
 from rich.text import Text
-from rich.table import Table
-from rich import box
 
 from ..utils import format_size
 
 
-# Block characters for the bar
-BLOCK_FULL = "█"
-BLOCK_CHARS = ["█", "▓", "▒", "░"]
+# Block character for cells
+BLOCK = "█"
 
-# Colors for different categories/items (cycling through)
-COLORS = [
-    "bright_blue",
-    "bright_green",
-    "bright_yellow",
-    "bright_magenta",
-    "bright_cyan",
-    "bright_red",
-    "blue",
-    "green",
-    "yellow",
-    "magenta",
+# Heat colors from cool (small) to hot (large)
+HEAT_COLORS = [
+    "bright_blue",  # Coolest - smallest
     "cyan",
-    "red",
+    "bright_cyan",
+    "green",
+    "bright_green",
+    "yellow",
+    "bright_yellow",
+    "rgb(255,165,0)",  # Orange
+    "bright_red",
+    "red",  # Hottest - largest
 ]
 
 
@@ -44,227 +38,223 @@ class SpaceItem:
     category: str = ""
 
 
-def create_space_bar(
-    items: Sequence[SpaceItem],
-    width: int = 60,
-) -> tuple[Text, list[tuple[str, str, int]], int]:
-    """
-    Create a horizontal bar showing space distribution.
-
-    Args:
-        items: List of items with name and size
-        width: Width of the bar in characters
-
-    Returns:
-        Tuple of (bar Text, legend items, total size)
-    """
-    if not items:
-        return Text("No items to display", style="dim"), [], 0
-
-    total_size = sum(item.size for item in items)
-    if total_size == 0:
-        return Text("No space used", style="dim"), [], 0
-
-    # Sort by size descending
-    sorted_items = sorted(items, key=lambda x: x.size, reverse=True)
-
-    # Build the bar
-    bar = Text()
-    legend_items: list[tuple[str, str, int]] = []  # (color, name, size)
-
-    remaining_width = width
-    for i, item in enumerate(sorted_items):
-        color = COLORS[i % len(COLORS)]
-
-        # Calculate width for this item (proportional to size)
-        proportion = item.size / total_size
-        item_width = max(1, int(proportion * width)) if proportion > 0.01 else 0
-
-        # Don't exceed remaining width
-        item_width = min(item_width, remaining_width)
-
-        if item_width > 0:
-            bar.append(BLOCK_FULL * item_width, style=color)
-            remaining_width -= item_width
-            legend_items.append((color, item.name, item.size))
-
-    # Fill any remaining space (due to rounding)
-    if remaining_width > 0 and legend_items:
-        bar.append(BLOCK_FULL * remaining_width, style=legend_items[0][0])
-
-    return bar, legend_items, total_size
+def _get_heat_color(proportion: float) -> str:
+    """Get color based on proportion (0.0 to 1.0)."""
+    idx = min(int(proportion * len(HEAT_COLORS)), len(HEAT_COLORS) - 1)
+    return HEAT_COLORS[idx]
 
 
-def display_space_map(
+def _truncate(text: str, max_len: int) -> str:
+    """Truncate text with ellipsis if needed."""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def display_treemap(
     console: Console,
     items: Sequence[SpaceItem],
     title: str = "Space Distribution",
     width: int = 70,
-    max_legend_items: int = 10,
+    height: int = 12,
 ) -> None:
     """
-    Display a visual space map with legend.
+    Display a treemap-style heatmap visualization.
+
+    Each item gets a rectangular block sized proportionally to its size.
+    Colors indicate relative size (blue=small, red=large).
 
     Args:
         console: Rich console for output
         items: List of items with name and size
         title: Title for the display
-        width: Width of the bar
-        max_legend_items: Maximum items to show in legend
-    """
-    if not items:
-        console.print(f"\n[dim]No items to display for {title}[/]")
-        return
-
-    bar, legend_items, total_size = create_space_bar(items, width=width)
-
-    # Create the display
-    console.print()
-
-    # Title and total
-    console.print(f"[bold]{title}[/] [dim]({format_size(total_size)} total)[/]")
-    console.print()
-
-    # The bar
-    console.print("  ", end="")
-    console.print(bar)
-    console.print()
-
-    # Legend as a compact table
-    if legend_items:
-        # Show top items
-        display_items = legend_items[:max_legend_items]
-        other_size = sum(size for _, _, size in legend_items[max_legend_items:])
-
-        # Create two-column legend for compactness
-        left_col = []
-        right_col = []
-
-        for i, (color, name, size) in enumerate(display_items):
-            percentage = (size / total_size) * 100
-            # Truncate long names
-            display_name = name if len(name) <= 24 else name[:21] + "..."
-            entry = f"[{color}]{BLOCK_FULL}[/] {display_name}: [bold]{format_size(size)}[/] [dim]({percentage:.1f}%)[/]"
-
-            if i % 2 == 0:
-                left_col.append(entry)
-            else:
-                right_col.append(entry)
-
-        # Print legend in two columns
-        for i in range(max(len(left_col), len(right_col))):
-            left = left_col[i] if i < len(left_col) else ""
-            right = right_col[i] if i < len(right_col) else ""
-            if right:
-                console.print(f"  {left:<50} {right}")
-            else:
-                console.print(f"  {left}")
-
-        # Show "other" category if there are more items
-        if other_size > 0:
-            other_count = len(legend_items) - max_legend_items
-            percentage = (other_size / total_size) * 100
-            console.print(
-                f"  [dim]{BLOCK_FULL} +{other_count} others: {format_size(other_size)} ({percentage:.1f}%)[/]"
-            )
-
-
-def display_category_breakdown(
-    console: Console,
-    items: Sequence[SpaceItem],
-    title: str = "Space by Category",
-    width: int = 70,
-) -> None:
-    """
-    Display space map grouped by category.
-
-    Args:
-        console: Rich console for output
-        items: List of items with name, size, and category
-        title: Title for the display
-        width: Width of the bar
-    """
-    if not items:
-        console.print(f"\n[dim]No items to display for {title}[/]")
-        return
-
-    # Group by category
-    categories: dict[str, int] = {}
-    for item in items:
-        cat = item.category or "Other"
-        categories[cat] = categories.get(cat, 0) + item.size
-
-    # Convert to SpaceItems
-    category_items = [
-        SpaceItem(name=cat, size=size) for cat, size in categories.items()
-    ]
-
-    display_space_map(console, category_items, title=title, width=width)
-
-
-def display_horizontal_bars(
-    console: Console,
-    items: Sequence[SpaceItem],
-    title: str = "Space Usage",
-    max_items: int = 15,
-    bar_width: int = 30,
-) -> None:
-    """
-    Display horizontal bar chart for each item.
-
-    Args:
-        console: Rich console for output
-        items: List of items with name and size
-        title: Title for the display
-        max_items: Maximum number of items to show
-        bar_width: Width of each bar
+        width: Width in characters
+        height: Height in rows
     """
     if not items:
         console.print(f"\n[dim]No items to display[/]")
         return
 
-    sorted_items = sorted(items, key=lambda x: x.size, reverse=True)[:max_items]
-    max_size = sorted_items[0].size if sorted_items else 0
     total_size = sum(item.size for item in items)
+    if total_size == 0:
+        console.print(f"\n[dim]No space used[/]")
+        return
+
+    # Sort by size descending
+    sorted_items = sorted(items, key=lambda x: x.size, reverse=True)
+
+    # Calculate total cells and assign to items
+    total_cells = width * height
+
+    # Build cell assignments
+    cells: list[tuple[SpaceItem, str, float]] = []  # (item, color, proportion)
+
+    for item in sorted_items:
+        proportion = item.size / total_size
+        num_cells = max(1, int(proportion * total_cells))
+        color = _get_heat_color(proportion)
+        cells.extend([(item, color, proportion)] * num_cells)
+
+    # Trim or pad to exact size
+    if len(cells) > total_cells:
+        cells = cells[:total_cells]
+    elif len(cells) < total_cells:
+        # Pad with the largest item
+        if cells:
+            cells.extend([cells[0]] * (total_cells - len(cells)))
 
     console.print()
     console.print(f"[bold]{title}[/] [dim]({format_size(total_size)} total)[/]")
     console.print()
 
-    # Find max name length for alignment
-    max_name_len = min(25, max(len(item.name) for item in sorted_items))
+    # Build the grid
+    grid: list[list[tuple[SpaceItem, str, float]]] = []
+    cell_idx = 0
 
-    for i, item in enumerate(sorted_items):
-        color = COLORS[i % len(COLORS)]
+    for row in range(height):
+        grid_row = []
+        for col in range(width):
+            if cell_idx < len(cells):
+                grid_row.append(cells[cell_idx])
+                cell_idx += 1
+            else:
+                grid_row.append((sorted_items[0], HEAT_COLORS[0], 0))
+        grid.append(grid_row)
 
-        # Calculate bar width
-        proportion = item.size / max_size if max_size > 0 else 0
-        filled = int(proportion * bar_width)
+    # Render the grid with labels
+    # First pass: render the blocks
+    for row_idx, row in enumerate(grid):
+        line = Text()
+        line.append("  ")  # Indent
+        for item, color, _ in row:
+            line.append(BLOCK, style=color)
+        console.print(line)
 
-        # Truncate name
-        name = (
-            item.name
-            if len(item.name) <= max_name_len
-            else item.name[: max_name_len - 3] + "..."
-        )
+    console.print()
 
-        # Build bar
-        bar = f"[{color}]{BLOCK_FULL * filled}[/][dim]{'░' * (bar_width - filled)}[/]"
+    # Legend with top items
+    max_legend = min(10, len(sorted_items))
+    legend_items = sorted_items[:max_legend]
 
-        # Percentage of total
-        pct = (item.size / total_size * 100) if total_size > 0 else 0
+    # Two-column legend
+    console.print(
+        "  [bold]Legend:[/] [dim](color = relative size, blue→red = small→large)[/]"
+    )
+    console.print()
 
+    for i in range(0, len(legend_items), 2):
+        left_item = legend_items[i]
+        left_prop = left_item.size / total_size
+        left_color = _get_heat_color(left_prop)
+        left_pct = left_prop * 100
+        left_name = _truncate(left_item.name, 20)
+        left_text = f"[{left_color}]{BLOCK}{BLOCK}[/] {left_name}: {format_size(left_item.size)} ({left_pct:.1f}%)"
+
+        if i + 1 < len(legend_items):
+            right_item = legend_items[i + 1]
+            right_prop = right_item.size / total_size
+            right_color = _get_heat_color(right_prop)
+            right_pct = right_prop * 100
+            right_name = _truncate(right_item.name, 20)
+            right_text = f"[{right_color}]{BLOCK}{BLOCK}[/] {right_name}: {format_size(right_item.size)} ({right_pct:.1f}%)"
+            console.print(f"  {left_text:<45} {right_text}")
+        else:
+            console.print(f"  {left_text}")
+
+    # Show remaining count
+    if len(sorted_items) > max_legend:
+        remaining = len(sorted_items) - max_legend
+        remaining_size = sum(item.size for item in sorted_items[max_legend:])
         console.print(
-            f"  {name:<{max_name_len}} {bar} [bold]{format_size(item.size):>9}[/] [dim]({pct:5.1f}%)[/]"
+            f"\n  [dim]... and {remaining} more ({format_size(remaining_size)})[/]"
         )
 
-    # Show count of remaining items
-    remaining = len(items) - max_items
-    if remaining > 0:
-        remaining_size = sum(
-            item.size
-            for item in sorted(items, key=lambda x: x.size, reverse=True)[max_items:]
+
+def display_heatmap_bar(
+    console: Console,
+    items: Sequence[SpaceItem],
+    title: str = "Space Distribution",
+    width: int = 70,
+) -> None:
+    """
+    Display a single-row heatmap bar with legend.
+
+    Args:
+        console: Rich console for output
+        items: List of items with name and size
+        title: Title for the display
+        width: Width in characters
+    """
+    if not items:
+        console.print(f"\n[dim]No items to display[/]")
+        return
+
+    total_size = sum(item.size for item in items)
+    if total_size == 0:
+        console.print(f"\n[dim]No space used[/]")
+        return
+
+    # Sort by size descending
+    sorted_items = sorted(items, key=lambda x: x.size, reverse=True)
+
+    console.print()
+    console.print(f"[bold]{title}[/] [dim]({format_size(total_size)} total)[/]")
+    console.print()
+
+    # Build the bar
+    bar = Text()
+    bar.append("  ")
+
+    items_in_bar: list[tuple[SpaceItem, str, int]] = []  # (item, color, width)
+    remaining_width = width
+
+    for item in sorted_items:
+        proportion = item.size / total_size
+        item_width = max(1, int(proportion * width)) if proportion > 0.005 else 0
+        item_width = min(item_width, remaining_width)
+
+        if item_width > 0:
+            color = _get_heat_color(proportion)
+            bar.append(BLOCK * item_width, style=color)
+            items_in_bar.append((item, color, item_width))
+            remaining_width -= item_width
+
+        if remaining_width <= 0:
+            break
+
+    # Fill remainder with smallest shown item
+    if remaining_width > 0 and items_in_bar:
+        last_item, last_color, _ = items_in_bar[-1]
+        bar.append(BLOCK * remaining_width, style=last_color)
+
+    console.print(bar)
+    console.print()
+
+    # Legend
+    max_legend = min(10, len(items_in_bar))
+
+    for i in range(0, max_legend, 2):
+        item, color, _ = items_in_bar[i]
+        prop = item.size / total_size
+        pct = prop * 100
+        name = _truncate(item.name, 22)
+        left = (
+            f"[{color}]{BLOCK}{BLOCK}[/] {name}: {format_size(item.size)} ({pct:.1f}%)"
         )
+
+        if i + 1 < max_legend:
+            item2, color2, _ = items_in_bar[i + 1]
+            prop2 = item2.size / total_size
+            pct2 = prop2 * 100
+            name2 = _truncate(item2.name, 22)
+            right = f"[{color2}]{BLOCK}{BLOCK}[/] {name2}: {format_size(item2.size)} ({pct2:.1f}%)"
+            console.print(f"  {left:<48} {right}")
+        else:
+            console.print(f"  {left}")
+
+    if len(sorted_items) > max_legend:
+        remaining = len(sorted_items) - max_legend
+        remaining_size = sum(item.size for item in sorted_items[max_legend:])
         console.print(
             f"\n  [dim]... and {remaining} more ({format_size(remaining_size)})[/]"
         )
