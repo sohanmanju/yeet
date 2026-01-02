@@ -47,7 +47,6 @@ from .ui.selector import (
     select_files_interactive,
     select_caches_interactive,
 )
-from .ui.spacemap import SpaceItem, display_treemap
 
 
 # ASCII art logo
@@ -347,13 +346,6 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
         console.print("\n[dim]No stale projects found.[/]")
         return
 
-    # Display space map
-    space_items = [
-        SpaceItem(name=p.name, size=p.total_size, category=p.project_type.value)
-        for p in results.projects
-    ]
-    display_treemap(console, space_items, title="Space by Project")
-
     # Sort and select
     sorted_projects = sorted(results.projects, key=lambda p: p.days_stale, reverse=True)
 
@@ -397,12 +389,6 @@ def handle_large_files(console: Console, args: argparse.Namespace) -> None:
     if not results.files:
         console.print(f"\n[dim]No files larger than {args.min_size}MB found.[/]")
         return
-
-    # Display space map
-    space_items = [
-        SpaceItem(name=f.name, size=f.size, category=f.extension) for f in results.files
-    ]
-    display_treemap(console, space_items, title="Space by File")
 
     # Interactive selection
     files_to_delete = select_files_interactive(
@@ -524,13 +510,6 @@ def handle_cache_scan(console: Console, args: argparse.Namespace) -> None:
     if not results.caches:
         console.print("\n[dim]No significant caches found.[/]")
         return
-
-    # Display space map by category
-    space_items = [
-        SpaceItem(name=c.name, size=c.size, category=c.category.value)
-        for c in results.caches
-    ]
-    display_treemap(console, space_items, title="Space by Cache")
 
     # Interactive selection
     caches_to_clear = select_caches_interactive(
