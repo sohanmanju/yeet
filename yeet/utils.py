@@ -1,0 +1,491 @@
+"""Utility functions for file size formatting, date helpers, and common operations."""
+
+from __future__ import annotations
+
+import os
+import platform
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+
+
+# Time thresholds
+DAYS_SINCE_ACCESS = 90  # Projects not accessed in 90 days
+DAYS_SINCE_COMMIT = 180  # Git projects with no commits in 180 days
+
+# Size thresholds
+DEFAULT_LARGE_FILE_MB = 25  # Files larger than 25MB
+
+# Files that indicate a directory is a coding project
+PROJECT_MARKERS = frozenset(
+    {
+        # Git
+        ".git",
+        # Python
+        "pyproject.toml",
+        "setup.py",
+        "requirements.txt",
+        "Pipfile",
+        # JavaScript/Node
+        "package.json",
+        # Rust
+        "Cargo.toml",
+        # Go
+        "go.mod",
+        # Ruby
+        "Gemfile",
+        # Java/Kotlin
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        # .NET
+        "*.csproj",
+        "*.sln",
+        # PHP
+        "composer.json",
+        # Swift/iOS
+        "Package.swift",
+        "*.xcodeproj",
+        "*.xcworkspace",
+        # Dart/Flutter
+        "pubspec.yaml",
+    }
+)
+
+# Directories to skip when calculating size (heavy deps)
+SKIP_FOR_SIZE = frozenset(
+    {
+        "node_modules",
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".env",
+        "env",
+        "target",
+        "build",
+        "dist",
+        ".next",
+        ".nuxt",
+        "vendor",
+        "Pods",
+        ".gradle",
+    }
+)
+
+
+class ProjectType(Enum):
+    """Type of project detected."""
+
+    GIT = "git"
+    NODE = "node"
+    PYTHON = "python"
+    RUST = "rust"
+    GO = "go"
+    OTHER = "other"
+
+
+@dataclass(slots=True)
+class Project:
+    """Represents a coding project directory."""
+
+    path: Path
+    name: str
+    project_type: ProjectType
+    total_size: int
+    last_modified: datetime
+    last_accessed: datetime
+    last_commit_date: datetime | None = None
+    is_git_repo: bool = False
+
+    @property
+    def days_since_modified(self) -> int:
+        """Days since any file in project was modified."""
+        return (datetime.now() - self.last_modified).days
+
+    @property
+    def days_since_accessed(self) -> int:
+        """Days since any file in project was accessed."""
+        return (datetime.now() - self.last_accessed).days
+
+    @property
+    def days_since_commit(self) -> int | None:
+        """Days since last git commit, or None if not a git repo."""
+        if self.last_commit_date is None:
+            return None
+        return (datetime.now() - self.last_commit_date).days
+
+    @property
+    def days_stale(self) -> int:
+        """
+        Days since last activity.
+
+        Uses the MOST RECENT of:
+        - Last file access time
+        - Last file modification time
+        - Last git commit (if git repo)
+
+        This ensures recently opened projects aren't marked as stale
+        even if they haven't been committed.
+        """
+        # Get most recent activity timestamp
+        most_recent = self.last_modified
+
+        if self.last_accessed > most_recent:
+            most_recent = self.last_accessed
+
+        if self.last_commit_date is not None and self.last_commit_date > most_recent:
+            most_recent = self.last_commit_date
+
+        return (datetime.now() - most_recent).days
+
+    @property
+    def size_formatted(self) -> str:
+        """Human-readable project size."""
+        return format_size(self.total_size)
+
+    @property
+    def last_activity(self) -> datetime:
+        """Most recent activity date (access, modify, or commit)."""
+        most_recent = self.last_modified
+
+        if self.last_accessed > most_recent:
+            most_recent = self.last_accessed
+
+        if self.last_commit_date is not None and self.last_commit_date > most_recent:
+            most_recent = self.last_commit_date
+
+        return most_recent
+
+    @property
+    def activity_type(self) -> str:
+        """
+        Returns what type of activity determined the staleness.
+
+        Returns one of: "commit", "modified", "opened"
+        """
+        most_recent = self.last_modified
+        activity = "modified"
+
+        if self.last_accessed > most_recent:
+            most_recent = self.last_accessed
+            activity = "opened"
+
+        if self.last_commit_date is not None and self.last_commit_date > most_recent:
+            activity = "commit"
+
+        return activity
+
+
+@dataclass(slots=True)
+class LargeFile:
+    """Represents a large file found during scan."""
+
+    path: Path
+    name: str
+    size: int
+    last_accessed: datetime
+    last_modified: datetime
+
+    @property
+    def size_formatted(self) -> str:
+        """Human-readable file size."""
+        return format_size(self.size)
+
+    @property
+    def days_since_accessed(self) -> int:
+        """Days since file was last accessed."""
+        return (datetime.now() - self.last_accessed).days
+
+    @property
+    def days_since_modified(self) -> int:
+        """Days since file was last modified."""
+        return (datetime.now() - self.last_modified).days
+
+    @property
+    def extension(self) -> str:
+        """File extension."""
+        return self.path.suffix.lower() or "—"
+
+
+@dataclass
+class ScanResults:
+    """Container for project scan results."""
+
+    projects: list[Project] = field(default_factory=list)
+
+    # Statistics
+    total_projects_scanned: int = 0
+    total_size_scanned: int = 0
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def stale_projects(self) -> list[Project]:
+        """Get projects sorted by staleness (most stale first)."""
+        return sorted(self.projects, key=lambda p: p.days_stale, reverse=True)
+
+    @property
+    def large_projects(self) -> list[Project]:
+        """Get projects sorted by size (largest first)."""
+        return sorted(self.projects, key=lambda p: p.total_size, reverse=True)
+
+    @property
+    def total_reclaimable_size(self) -> int:
+        """Total size of all projects."""
+        return sum(p.total_size for p in self.projects)
+
+
+@dataclass
+class LargeFileScanResults:
+    """Container for large file scan results."""
+
+    files: list[LargeFile] = field(default_factory=list)
+
+    # Statistics
+    total_files_scanned: int = 0
+    total_dirs_scanned: int = 0
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_size(self) -> int:
+        """Total size of all large files."""
+        return sum(f.size for f in self.files)
+
+    @property
+    def by_size(self) -> list[LargeFile]:
+        """Get files sorted by size (largest first)."""
+        return sorted(self.files, key=lambda f: f.size, reverse=True)
+
+
+class CacheCategory(Enum):
+    """Category of cache location."""
+
+    BROWSER = "Browser"
+    PACKAGE_MANAGER = "Package Manager"
+    BUILD_TOOL = "Build Tool"
+    CONTAINER = "Container"
+    IDE = "IDE/Editor"
+    SYSTEM = "System"
+    RUNTIME = "Runtime"
+    OTHER = "Other"
+
+
+@dataclass(slots=True)
+class CacheLocation:
+    """Represents a cache directory found during scan."""
+
+    path: Path
+    name: str  # Human-readable name (e.g., "npm cache", "Docker images")
+    category: CacheCategory
+    size: int
+    file_count: int
+    last_modified: datetime
+
+    @property
+    def size_formatted(self) -> str:
+        """Human-readable size."""
+        return format_size(self.size)
+
+    @property
+    def days_since_modified(self) -> int:
+        """Days since cache was last modified."""
+        return (datetime.now() - self.last_modified).days
+
+
+@dataclass
+class CacheScanResults:
+    """Container for cache scan results."""
+
+    caches: list[CacheLocation] = field(default_factory=list)
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_size(self) -> int:
+        """Total size of all caches."""
+        return sum(c.size for c in self.caches)
+
+    @property
+    def by_size(self) -> list[CacheLocation]:
+        """Get caches sorted by size (largest first)."""
+        return sorted(self.caches, key=lambda c: c.size, reverse=True)
+
+    @property
+    def by_category(self) -> dict[CacheCategory, list[CacheLocation]]:
+        """Get caches grouped by category."""
+        result: dict[CacheCategory, list[CacheLocation]] = {}
+        for cache in self.caches:
+            if cache.category not in result:
+                result[cache.category] = []
+            result[cache.category].append(cache)
+        return result
+
+
+def format_size(size_bytes: int) -> str:
+    """Convert bytes to human-readable format."""
+    if size_bytes < 0:
+        return "0 B"
+
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(size) < 1024.0:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+
+    return f"{size:.1f} PB"
+
+
+def format_date(dt: datetime) -> str:
+    """Format datetime for display."""
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def format_days_ago(days: int | None) -> str:
+    """Format days as relative time string."""
+    if days is None:
+        return "Never"
+    if days == 0:
+        return "Today"
+    if days == 1:
+        return "Yesterday"
+    if days < 30:
+        return f"{days} days ago"
+    if days < 365:
+        months = days // 30
+        return f"{months} month{'s' if months > 1 else ''} ago"
+    years = days // 365
+    return f"{years} year{'s' if years > 1 else ''} ago"
+
+
+def is_hidden(path: Path) -> bool:
+    """Check if a path is hidden (starts with .)."""
+    return path.name.startswith(".")
+
+
+def should_skip_directory(name: str) -> bool:
+    """Check if directory should be skipped during scanning."""
+    return name in SKIP_FOR_SIZE or name.startswith(".")
+
+
+def get_directory_size(path: Path) -> int:
+    """Calculate total size of a directory efficiently."""
+    total = 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                    elif entry.is_dir(follow_symlinks=False):
+                        total += get_directory_size(Path(entry.path))
+                except (OSError, PermissionError):
+                    continue
+    except (OSError, PermissionError):
+        pass
+    return total
+
+
+def delete_file(path: Path) -> tuple[bool, str]:
+    """Delete a file and return success status with message."""
+    try:
+        if path.is_file():
+            path.unlink()
+            return True, f"Deleted: {path}"
+        return False, f"Not a file: {path}"
+    except PermissionError:
+        return False, f"Permission denied: {path}"
+    except OSError as e:
+        return False, f"Error deleting {path}: {e}"
+
+
+def delete_directory(path: Path) -> tuple[bool, str]:
+    """Delete a directory and all its contents."""
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+            return True, f"Deleted directory: {path}"
+        return False, f"Not a directory: {path}"
+    except PermissionError:
+        return False, f"Permission denied: {path}"
+    except OSError as e:
+        return False, f"Error deleting {path}: {e}"
+
+
+def validate_directory(path_str: str) -> tuple[bool, Path | str]:
+    """Validate that a path is a valid, accessible directory."""
+    try:
+        path = Path(path_str).expanduser().resolve()
+
+        if not path.exists():
+            return False, f"Path does not exist: {path}"
+
+        if not path.is_dir():
+            return False, f"Path is not a directory: {path}"
+
+        # Check if we can read the directory
+        try:
+            next(os.scandir(path), None)
+        except PermissionError:
+            return False, f"Permission denied: {path}"
+
+        return True, path
+
+    except Exception as e:
+        return False, f"Invalid path: {e}"
+
+
+def open_path(path: Path) -> tuple[bool, str]:
+    """
+    Open a path in the system file manager.
+
+    - macOS: Opens in Finder
+    - Linux: Opens with xdg-open
+    - Windows: Opens in Explorer
+
+    Args:
+        path: Path to open (file or directory)
+
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        if not path.exists():
+            return False, f"Path does not exist: {path}"
+
+        system = platform.system().lower()
+
+        if system == "darwin":
+            # macOS - use 'open' command
+            # -R reveals the file in Finder (selects it)
+            if path.is_file():
+                subprocess.run(["open", "-R", str(path)], check=True)
+            else:
+                subprocess.run(["open", str(path)], check=True)
+
+        elif system == "linux":
+            # Linux - use xdg-open
+            subprocess.run(["xdg-open", str(path)], check=True)
+
+        elif system == "windows":
+            # Windows - use explorer
+            if path.is_file():
+                # /select highlights the file in Explorer
+                subprocess.run(["explorer", "/select,", str(path)], check=True)
+            else:
+                subprocess.run(["explorer", str(path)], check=True)
+
+        else:
+            return False, f"Unsupported platform: {system}"
+
+        return True, f"Opened: {path}"
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Failed to open: {e}"
+    except FileNotFoundError:
+        return False, "File manager command not found"
+    except Exception as e:
+        return False, f"Error opening path: {e}"
