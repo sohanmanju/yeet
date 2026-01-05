@@ -125,15 +125,6 @@ def get_directory_prompt(console: Console) -> Path:
     Validates the path and loops until a valid directory is provided.
     """
     console.print()
-    console.print(
-        Panel(
-            "[bold cyan]Yeet[/] - Storage Cleanup Tool\n\n"
-            "Find and delete stale coding projects to reclaim disk space.",
-            title="Welcome",
-            border_style="cyan",
-        )
-    )
-    console.print()
     console.print("[dim]Start typing a path - autocomplete suggestions will appear.[/]")
     console.print(
         "[dim]Use Tab to complete, arrow keys to navigate, Enter to select.[/]"
@@ -173,18 +164,26 @@ def get_directory_prompt(console: Console) -> Path:
 def confirm_deletion(
     console: Console,
     projects: list[Project],
+    use_trash: bool = False,
 ) -> bool:
     """
     Show summary and confirm deletion.
+
+    Args:
+        console: Rich console for output
+        projects: List of projects to delete
+        use_trash: If True, items will be moved to trash instead of permanent delete
 
     Returns True if user confirms, False otherwise.
     """
     total_size = sum(p.total_size for p in projects)
 
+    action_verb = "move to trash" if use_trash else "delete"
+
     console.print()
     console.print(
         Panel(
-            f"[bold red]About to delete {len(projects)} project(s):[/]\n\n"
+            f"[bold red]About to {action_verb} {len(projects)} project(s):[/]\n\n"
             + "\n".join(f"  - {p.name} ({p.size_formatted})" for p in projects[:10])
             + (f"\n  ... and {len(projects) - 10} more" if len(projects) > 10 else "")
             + f"\n\n[bold]Total space to reclaim:[/] [green]{format_size(total_size)}[/]",
@@ -194,8 +193,14 @@ def confirm_deletion(
     )
     console.print()
 
+    confirm_msg = (
+        "[bold red]Are you sure you want to move these projects to trash?[/]"
+        if use_trash
+        else "[bold red]Are you sure you want to delete these projects permanently?[/]"
+    )
+
     return Confirm.ask(
-        "[bold red]Are you sure you want to delete these projects?[/]",
+        confirm_msg,
         default=False,
         console=console,
     )

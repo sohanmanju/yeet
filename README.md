@@ -1,30 +1,54 @@
 # yeet
 
-A CLI tool to reclaim your disk space by finding and deleting stale projects, large files, and system caches.
+A fast, interactive CLI tool to reclaim disk space by finding and deleting stale projects, large files, system caches, and more.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 ## Features
 
-- **Stale Projects Scanner** - Find coding projects you haven't touched in months
-  - Detects projects by markers (package.json, pyproject.toml, Cargo.toml, go.mod, etc.)
-  - Shows last opened time, last commit date, and project size
-  - Supports Node.js, Python, Rust, Go, Ruby, Java, .NET, PHP, Swift, and more
+### Disk Explorer (New in v0.2.0)
+Browse your filesystem interactively, sorted by size - a visual disk usage analyzer in your terminal.
 
-- **Large File Scanner** - Find big files hogging your storage
-  - Configurable size threshold (default 25MB)
-  - Shows file type, size, and last modified date
+- **Navigate directories** with vim-style keybindings
+- **Filter by name or age** to find specific items
+- **Multi-select across directories** before batch deletion
+- **File type breakdown** to see what's using space
+- **Move to trash** by default (recoverable) or permanent delete
 
-- **System Cache Scanner** - Clear browser, package manager, and app caches
-  - Cross-platform support (macOS, Linux, Windows)
-  - 60+ cache locations including:
-    - **Browsers**: Chrome, Firefox, Safari, Edge, Brave, Arc
-    - **Package Managers**: npm, yarn, pnpm, pip, cargo, go, maven, gradle, homebrew, and more
-    - **Build Tools**: Xcode DerivedData, Android SDK, Bazel, ccache
-    - **Containers**: Docker, Podman, Minikube
-    - **IDEs**: VS Code, Cursor, JetBrains, Sublime Text, Vim/Neovim
-    - **System**: Logs, thumbnails, font caches
+### Stale Projects Scanner
+Find coding projects you haven't touched in months.
+
+- Detects projects by markers (package.json, pyproject.toml, Cargo.toml, go.mod, etc.)
+- Shows last opened time, last commit date, and project size
+- Supports Node.js, Python, Rust, Go, Ruby, Java, .NET, PHP, Swift, and more
+
+### Large File Scanner
+Find big files hogging your storage.
+
+- Configurable size threshold (default 25MB)
+- Shows file type, size, and last modified date
+
+### System Cache Scanner
+Clear browser, package manager, and app caches.
+
+- Cross-platform support (macOS, Linux, Windows)
+- 60+ cache locations including:
+  - **Browsers**: Chrome, Firefox, Safari, Edge, Brave, Arc
+  - **Package Managers**: npm, yarn, pnpm, pip, cargo, go, maven, gradle, homebrew
+  - **Build Tools**: Xcode DerivedData, Android SDK, Bazel, ccache
+  - **Containers**: Docker, Podman, Minikube
+  - **IDEs**: VS Code, Cursor, JetBrains, Sublime Text, Vim/Neovim
+
+### Xcode Cleanup (macOS)
+Reclaim tens of gigabytes from Xcode's caches.
+
+- **Simulator Runtimes** - Often 5-10+ GB each
+- Device Support files
+- Derived Data
+- Archives
+- Documentation Cache
+- Smart detection of "latest" versions to keep
 
 ## Installation
 
@@ -50,18 +74,48 @@ uv run yeet
 # Interactive mode with menu
 yeet
 
-# Scan a specific directory for stale projects
-yeet /path/to/projects
+# Scan a specific directory
+yeet /path/to/scan
 
 # Customize thresholds
 yeet --days 30              # Projects inactive for 30+ days (default: 90)
 yeet --min-size 50          # Files larger than 50MB (default: 25)
 yeet --min-cache-size 10    # Caches larger than 10MB (default: 1)
+
+# Export scan results to JSON (for scripting)
+yeet ~/Library --export results.json
+yeet ~/Downloads --export -   # Output to stdout
 ```
 
-### Interactive Controls
+## Keyboard Shortcuts
 
-When in the selection screen:
+### Disk Explorer
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or `↑` / `↓` | Navigate up/down |
+| `Enter` / `l` | Open directory |
+| `h` / `Backspace` | Go to parent directory |
+| `g` / `G` | Go to top/bottom |
+| `Ctrl+U` / `Ctrl+D` | Page up/down |
+| `~` | Jump to home directory |
+| `/` | Jump to root |
+| `Space` | Toggle selection |
+| `*` | Select all visible |
+| `u` | Deselect all |
+| `d` | Delete selected |
+| `f` | Filter by name |
+| `a` | Filter by age |
+| `c` | Clear filter |
+| `e` | Show file type breakdown |
+| `i` | Show item info |
+| `s` | Cycle sort mode |
+| `t` | Toggle small items |
+| `o` | Open in Finder/file manager |
+| `?` | Show help |
+| `q` / `Esc` | Quit |
+
+### Selection Screens (Projects/Files/Caches)
 
 | Key | Action |
 |-----|--------|
@@ -70,46 +124,50 @@ When in the selection screen:
 | `Enter` | Confirm selection |
 | `a` | Select all |
 | `n` | Select none |
-| `o` | Open in file manager (cache scanner) |
+| `o` | Open in file manager |
 | `q` / `Esc` | Cancel |
 
-## Screenshots
+## Configuration
 
-### Main Menu
+Yeet stores settings in `~/.config/yeet/config.toml`:
+
+```toml
+[explorer]
+start_path = "~"        # Starting directory for disk explorer
+min_size_mb = 5         # Minimum size to show in explorer
+show_hidden = true      # Show hidden files/directories
+
+[deletion]
+use_trash = true        # Move to trash instead of permanent delete
+confirm_delete = true   # Ask for confirmation before delete
+
+[scanner]
+days_threshold = 90     # Days to consider project stale
+large_file_mb = 25      # Minimum size for large files
+cache_size_mb = 1       # Minimum cache size to show
+
+[cache]
+enabled = true          # Persist size cache to disk
+max_age_hours = 24      # Max age of cached sizes
 ```
-██╗   ██╗███████╗███████╗████████╗
-╚██╗ ██╔╝██╔════╝██╔════╝╚══██╔══╝
- ╚████╔╝ █████╗  █████╗     ██║   
-  ╚██╔╝  ██╔══╝  ██╔══╝     ██║   
-   ██║   ███████╗███████╗   ██║   
-   ╚═╝   ╚══════╝╚══════╝   ╚═╝   
 
-  v0.1.0 - Reclaim your disk space!
+## Safety
 
-What would you like to clean up?
+- **Move to trash by default** - Deleted items can be recovered from system trash
+- **Interactive confirmation** before any deletion
+- **Preview** what will be deleted with total size
+- **Quit warning** if you have items selected
+- **No automatic deletion** - you always choose what to delete
+- Caches can be regenerated by apps (safe to delete)
+- Warns before deleting system paths
 
-  [1] Stale Projects  - Find old coding projects not touched in a while
-  [2] Large Files     - Find big files taking up space
-  [3] System Caches   - Clear browser, package manager, and app caches
-  [q] Quit
-```
+## Performance
 
-### Cache Scanner Results
-```
-╭─────────────────────────────── Cache Summary ────────────────────────────────╮
-│ Cache Scan Complete                                                          │
-│                                                                              │
-│   Total caches found: 20                                                     │
-│   Total cache size: 41.8 GB                                                  │
-│                                                                              │
-│ By Category:                                                                 │
-│   System: 1 (18.7 GB)                                                        │
-│   Browser: 1 (6.7 GB)                                                        │
-│   Package Manager: 7 (7.2 GB)                                                │
-│   Runtime: 2 (2.4 GB)                                                        │
-│   IDE/Editor: 1 (490.0 MB)                                                   │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
+- **5x faster** directory size calculation using native `du` command
+- **Parallel scanning** with thread pool for concurrent operations
+- **Prioritized loading** - visible items load first
+- **Persistent cache** - sizes cached for faster subsequent scans
+- **Bounded memory** - LRU cache prevents unbounded growth
 
 ## How It Works
 
@@ -122,19 +180,19 @@ A project is considered "stale" based on the **most recent** of:
 
 This ensures recently opened projects aren't marked as stale even if they haven't been committed.
 
+### Disk Size Calculation
+
+Yeet uses `du` for accurate disk usage reporting:
+- Correctly handles **sparse files** (VM disk images, containers)
+- Reports **actual disk usage**, not apparent file size
+- Handles permission errors gracefully
+
 ### Cache Detection
 
 The scanner automatically detects your operating system and checks common cache locations:
 - **macOS**: `~/Library/Caches`, Xcode DerivedData, Homebrew, etc.
 - **Linux**: `~/.cache`, `~/.local/share`, etc.
 - **Windows**: `AppData/Local`, `AppData/Roaming`, etc.
-
-## Safety
-
-- **Interactive confirmation** before any deletion
-- **Preview** what will be deleted with total size
-- **No automatic deletion** - you always choose what to delete
-- Caches can be regenerated by apps (safe to delete)
 
 ## Dependencies
 

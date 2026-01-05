@@ -12,6 +12,9 @@ from ..utils import (
     ScanResults,
     CacheLocation,
     CacheScanResults,
+    XcodeItem,
+    XcodeItemType,
+    XcodeScanResults,
     format_days_ago,
     format_size,
 )
@@ -123,6 +126,7 @@ def display_projects_table(
 def display_deletion_results(
     console: Console,
     deleted_projects: list[tuple[Project, bool, str]],
+    use_trash: bool = False,
 ) -> None:
     """Display results of deletion operation."""
     console.print()
@@ -132,13 +136,26 @@ def display_deletion_results(
 
     total_reclaimed = sum(p.total_size for p, success, _ in deleted_projects if success)
 
+    action_noun = "moved to trash" if use_trash else "deleted"
+    title_action = "Moved to Trash" if use_trash else "Deletion"
+
+    result_text = (
+        f"[bold]{title_action} Complete[/]\n\n"
+        f"  Projects {action_noun}: [green]{projects_success}[/]"
+        f"{f' ([red]{projects_failed} failed[/])' if projects_failed else ''}\n\n"
+        f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]"
+    )
+
+    if use_trash and projects_success > 0:
+        result_text += (
+            "\n\n[dim]Items moved to trash. You can restore them from "
+            "your system trash if needed.[/]"
+        )
+
     console.print(
         Panel(
-            f"[bold]Deletion Complete[/]\n\n"
-            f"  Projects deleted: [green]{projects_success}[/]"
-            f"{f' ([red]{projects_failed} failed[/])' if projects_failed else ''}\n\n"
-            f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]",
-            title="Deletion Summary",
+            result_text,
+            title=f"{title_action} Summary",
             border_style="green",
         )
     )
@@ -193,6 +210,7 @@ def display_cache_scan_summary(console: Console, results: CacheScanResults) -> N
 def display_cache_deletion_results(
     console: Console,
     deleted_caches: list[tuple[CacheLocation, bool, str]],
+    use_trash: bool = False,
 ) -> None:
     """Display results of cache deletion operation."""
     console.print()
@@ -202,12 +220,25 @@ def display_cache_deletion_results(
 
     total_reclaimed = sum(c.size for c, success, _ in deleted_caches if success)
 
+    action_noun = "moved to trash" if use_trash else "cleared"
+    title_action = "Moved to Trash" if use_trash else "Cache Cleanup"
+
+    result_text = (
+        f"[bold]{title_action} Complete[/]\n\n"
+        f"  Caches {action_noun}: [green]{caches_success}[/]"
+        f"{f' ([red]{caches_failed} failed[/])' if caches_failed else ''}\n\n"
+        f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]"
+    )
+
+    if use_trash and caches_success > 0:
+        result_text += (
+            "\n\n[dim]Items moved to trash. You can restore them from "
+            "your system trash if needed.[/]"
+        )
+
     console.print(
         Panel(
-            f"[bold]Cache Cleanup Complete[/]\n\n"
-            f"  Caches cleared: [green]{caches_success}[/]"
-            f"{f' ([red]{caches_failed} failed[/])' if caches_failed else ''}\n\n"
-            f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]",
+            result_text,
             title="Cleanup Summary",
             border_style="green",
         )
@@ -220,6 +251,79 @@ def display_cache_deletion_results(
         console.print("\n[bold red]Failed deletions:[/]")
         for cache, msg in failures[:10]:
             console.print(f"  [red]Cache:[/] {cache.name} - {msg}")
+
+        if len(failures) > 10:
+            console.print(f"  [dim]... and {len(failures) - 10} more failures[/]")
+
+
+def display_xcode_scan_summary(console: Console, results: XcodeScanResults) -> None:
+    """Display a summary of the Xcode scan results."""
+    console.print()
+
+    # Group by type for summary
+    by_type = results.by_type
+    type_summary = []
+    for item_type in XcodeItemType:
+        if item_type in by_type:
+            items = by_type[item_type]
+            total = sum(item.size for item in items)
+            latest_count = sum(1 for item in items if item.is_latest)
+            latest_info = f" ([cyan]{latest_count} latest[/])" if latest_count else ""
+            type_summary.append(
+                f"  {item_type.value}: [yellow]{len(items)}[/] ({format_size(total)}){latest_info}"
+            )
+
+    summary_text = "\n".join(type_summary) if type_summary else "  No Xcode items found"
+
+    console.print(
+        Panel(
+            f"[bold]Xcode Scan Complete[/]\n\n"
+            f"  Total items found: [yellow]{len(results.items)}[/]\n"
+            f"  Total size: [green]{format_size(results.total_size)}[/]\n"
+            f"  Reclaimable (excluding latest): [bold green]{format_size(results.reclaimable_size)}[/]\n\n"
+            f"[bold]By Category:[/]\n{summary_text}",
+            title="Xcode Cleanup Summary",
+            border_style="cyan",
+        )
+    )
+
+    if results.scan_errors:
+        console.print(
+            f"\n[dim]({len(results.scan_errors)} errors during scan - "
+            f"some directories were inaccessible)[/]"
+        )
+
+
+def display_xcode_deletion_results(
+    console: Console,
+    deleted_items: list[tuple[XcodeItem, bool, str]],
+) -> None:
+    """Display results of Xcode cleanup operation."""
+    console.print()
+
+    items_success = sum(1 for _, success, _ in deleted_items if success)
+    items_failed = len(deleted_items) - items_success
+
+    total_reclaimed = sum(item.size for item, success, _ in deleted_items if success)
+
+    console.print(
+        Panel(
+            f"[bold]Xcode Cleanup Complete[/]\n\n"
+            f"  Items deleted: [green]{items_success}[/]"
+            f"{f' ([red]{items_failed} failed[/])' if items_failed else ''}\n\n"
+            f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]",
+            title="Cleanup Summary",
+            border_style="cyan",
+        )
+    )
+
+    # Show failures if any
+    failures = [(item, msg) for item, success, msg in deleted_items if not success]
+
+    if failures:
+        console.print("\n[bold red]Failed deletions:[/]")
+        for item, msg in failures[:10]:
+            console.print(f"  [red]{item.item_type.value}:[/] {item.name} - {msg}")
 
         if len(failures) > 10:
             console.print(f"  [dim]... and {len(failures) - 10} more failures[/]")

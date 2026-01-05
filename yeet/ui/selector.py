@@ -15,6 +15,8 @@ from ..utils import (
     Project,
     LargeFile,
     CacheLocation,
+    XcodeItem,
+    XcodeItemType,
     format_days_ago,
     format_size,
     open_path,
@@ -608,10 +610,13 @@ class CacheSelector:
         # Selection indicator
         select_char = "[x]" if is_selected else "[ ]"
 
-        # Truncate name if needed
+        # Truncate name if needed, and add Xcode marker if applicable
         name = cache.name
-        if len(name) > w["name"] - 2:
-            name = name[: w["name"] - 5] + "..."
+        xcode_badge = " [Xcode]" if cache.is_xcode else ""
+        max_name_len = w["name"] - len(xcode_badge) - 2
+        if len(name) > max_name_len:
+            name = name[: max_name_len - 3] + "..."
+        name = name + xcode_badge
 
         # Format file count
         file_count = f"{cache.file_count:,}"
@@ -633,6 +638,8 @@ class CacheSelector:
             style = "class:cursor"
         elif is_selected:
             style = "class:selected"
+        elif cache.is_xcode:
+            style = "class:xcode"
         else:
             style = "class:normal"
 
@@ -766,6 +773,7 @@ class CacheSelector:
                 "selected": "green",
                 "cursor": "reverse",
                 "cursor-selected": "reverse green",
+                "xcode": "fg:ansicyan",
                 "footer": "bold",
                 "dim": "dim",
                 "status": "italic cyan",
@@ -823,4 +831,391 @@ def select_caches_interactive(
         return []
 
     selector = CacheSelector(caches, title)
+    return selector.run()
+
+
+class XcodeSelector:
+    """
+    Interactive Xcode item selector with keyboard navigation.
+
+    Features:
+    - Grouped display by category (Device Support, Derived Data, etc.)
+    - [Latest] badge for items that should be kept
+    - Auto-selects old versions by default
+    - Press 'o' to open item in Finder
+
+    Controls:
+        - Up/Down or j/k: Navigate
+        - Space: Toggle selection
+        - Enter: Confirm selection
+        - o: Open in Finder
+        - a: Select all (except latest)
+        - n: Select none
+        - q/Esc: Cancel
+    """
+
+    # Display order for item types
+    TYPE_ORDER = [
+        XcodeItemType.DEVICE_SUPPORT,
+        XcodeItemType.DERIVED_DATA,
+        XcodeItemType.ARCHIVE,
+        XcodeItemType.SIMULATOR_RUNTIME,
+        XcodeItemType.SIMULATOR_DEVICE,
+        XcodeItemType.DOCUMENTATION,
+        XcodeItemType.DEVICE_LOGS,
+    ]
+
+    def __init__(
+        self,
+        items: list[XcodeItem],
+        title: str = "Select Xcode items to delete",
+    ) -> None:
+        self.items = items
+        self.title = title
+        self.selected: set[int] = set()
+        self.cursor: int = 0
+        self.cancelled: bool = False
+        self.status_message: str = ""
+
+        # Group items by type
+        self.grouped_items: list[
+            tuple[XcodeItemType | None, XcodeItem | None, int]
+        ] = []
+        self._build_grouped_items()
+
+        # Don't auto-select - let user choose
+        # self.selected starts empty
+
+        # Column widths
+        self.col_widths = {
+            "select": 3,
+            "num": 4,
+            "name": 35,
+            "platform": 10,
+            "size": 10,
+            "modified": 13,
+            "badge": 10,
+        }
+
+    def _build_grouped_items(self) -> None:
+        """Build a flat list with group headers for display."""
+        items_by_type: dict[XcodeItemType, list[tuple[XcodeItem, int]]] = {}
+
+        for idx, item in enumerate(self.items):
+            if item.item_type not in items_by_type:
+                items_by_type[item.item_type] = []
+            items_by_type[item.item_type].append((item, idx))
+
+        # Build display list in order
+        for item_type in self.TYPE_ORDER:
+            if item_type not in items_by_type:
+                continue
+
+            type_items = items_by_type[item_type]
+
+            # Add header (None item indicates header)
+            self.grouped_items.append((item_type, None, -1))
+
+            # Sort items: by platform, then version descending
+            type_items.sort(
+                key=lambda x: (
+                    x[0].platform or "",
+                    x[0].version or (),
+                ),
+                reverse=True,
+            )
+            for item, idx in type_items:
+                self.grouped_items.append((item_type, item, idx))
+
+    def _get_header(self) -> FormattedText:
+        """Generate the header row."""
+        w = self.col_widths
+        header = (
+            f"{'':>{w['select']}} "
+            f"{'#':>{w['num']}} "
+            f"{'Name':<{w['name']}} "
+            f"{'Platform':<{w['platform']}} "
+            f"{'Size':>{w['size']}} "
+            f"{'Modified':>{w['modified']}} "
+            f"{'':>{w['badge']}}"
+        )
+        return FormattedText([("class:header", header)])
+
+    def _get_row(self, group_idx: int, cursor_position: int) -> FormattedText:
+        """Generate a single row (either header or item)."""
+        item_type, item, real_idx = self.grouped_items[group_idx]
+        w = self.col_widths
+
+        # If item is None, this is a section header
+        if item is None:
+            header_text = f"\n  ── {item_type.value} ──"
+            return FormattedText([("class:section-header", header_text)])
+
+        is_selected = real_idx in self.selected
+        is_cursor = group_idx == cursor_position
+
+        # Selection indicator
+        select_char = "[x]" if is_selected else "[ ]"
+
+        # Truncate name if needed
+        name = item.name
+        if len(name) > w["name"] - 2:
+            name = name[: w["name"] - 5] + "..."
+
+        # Platform (or empty for non-device-support)
+        platform = item.platform or ""
+
+        # Badge for latest
+        badge = "[Latest]" if item.is_latest else ""
+
+        row = (
+            f"{select_char:>{w['select']}} "
+            f"{real_idx + 1:>{w['num']}} "
+            f"{name:<{w['name']}} "
+            f"{platform:<{w['platform']}} "
+            f"{item.size_formatted:>{w['size']}} "
+            f"{format_days_ago(item.days_since_modified):>{w['modified']}} "
+            f"{badge:>{w['badge']}}"
+        )
+
+        # Style based on state
+        if item.is_latest:
+            if is_cursor:
+                style = "class:cursor-latest"
+            else:
+                style = "class:latest"
+        elif is_cursor and is_selected:
+            style = "class:cursor-selected"
+        elif is_cursor:
+            style = "class:cursor"
+        elif is_selected:
+            style = "class:selected"
+        else:
+            style = "class:normal"
+
+        return FormattedText([(style, row)])
+
+    def _get_selectable_indices(self) -> list[int]:
+        """Get indices in grouped_items that are selectable (not headers)."""
+        return [
+            i
+            for i, (_, item, real_idx) in enumerate(self.grouped_items)
+            if item is not None
+        ]
+
+    def _get_content(self) -> FormattedText:
+        """Generate the full table content."""
+        lines = []
+
+        # Title
+        lines.append(("class:title", f"\n  {self.title}\n\n"))
+
+        # Instructions
+        lines.append(
+            (
+                "class:help",
+                "  [Up/Down] Navigate  [Space] Toggle  [o] Open  [Enter] Confirm  [a] All  [n] None  [q] Cancel\n",
+            )
+        )
+        lines.append(
+            (
+                "class:help-extra",
+                "  Items marked [Latest] are the newest versions\n\n",
+            )
+        )
+
+        # Header
+        lines.append(("class:header", "  "))
+        lines.extend(self._get_header())
+        lines.append(("", "\n"))
+        lines.append(("class:header", "  " + "─" * 95 + "\n"))
+
+        # Get cursor position in selectable items
+        selectable = self._get_selectable_indices()
+        cursor_group_idx = (
+            selectable[self.cursor] if self.cursor < len(selectable) else 0
+        )
+
+        # Rows
+        for group_idx in range(len(self.grouped_items)):
+            _, item, _ = self.grouped_items[group_idx]
+            if item is None:
+                # Section header
+                lines.extend(self._get_row(group_idx, cursor_group_idx))
+                lines.append(("", "\n"))
+            else:
+                lines.append(("", "  "))
+                lines.extend(self._get_row(group_idx, cursor_group_idx))
+                lines.append(("", "\n"))
+
+        # Footer with selection info
+        selected_count = len(self.selected)
+        selected_size = sum(self.items[i].size for i in self.selected)
+        total_size = sum(item.size for item in self.items)
+        lines.append(("", "\n"))
+        lines.append(
+            (
+                "class:footer",
+                f"  Selected: {selected_count} items ({format_size(selected_size)}) "
+                f"/ Total: {len(self.items)} items ({format_size(total_size)})\n",
+            )
+        )
+
+        # Status message
+        if self.status_message:
+            lines.append(("class:status", f"  {self.status_message}\n"))
+
+        return FormattedText(lines)
+
+    def run(self) -> list[XcodeItem]:
+        """
+        Run the interactive selector.
+
+        Returns:
+            List of selected items, or empty list if cancelled.
+        """
+        if not self.items:
+            return []
+
+        selectable = self._get_selectable_indices()
+        if not selectable:
+            return []
+
+        # Key bindings
+        kb = KeyBindings()
+
+        @kb.add("up")
+        @kb.add("k")
+        def move_up(event):
+            self.cursor = max(0, self.cursor - 1)
+
+        @kb.add("down")
+        @kb.add("j")
+        def move_down(event):
+            self.cursor = min(len(selectable) - 1, self.cursor + 1)
+
+        @kb.add("space")
+        def toggle_selection(event):
+            if self.cursor < len(selectable):
+                group_idx = selectable[self.cursor]
+                _, _, real_idx = self.grouped_items[group_idx]
+                if real_idx in self.selected:
+                    self.selected.discard(real_idx)
+                else:
+                    self.selected.add(real_idx)
+
+        @kb.add("enter")
+        def confirm(event):
+            event.app.exit()
+
+        @kb.add("a")
+        def select_all(event):
+            # Select all except latest
+            self.selected = set(
+                i for i, item in enumerate(self.items) if not item.is_latest
+            )
+
+        @kb.add("n")
+        def select_none(event):
+            self.selected.clear()
+
+        @kb.add("o")
+        def open_item(event):
+            """Open the currently highlighted item in Finder."""
+            if self.cursor < len(selectable):
+                group_idx = selectable[self.cursor]
+                _, item, _ = self.grouped_items[group_idx]
+                if item:
+                    success, msg = open_path(item.path)
+                    if success:
+                        self.status_message = f"Opened: {item.name}"
+                    else:
+                        self.status_message = f"Error: {msg}"
+
+        @kb.add("q")
+        @kb.add("escape")
+        def cancel(event):
+            self.cancelled = True
+            self.selected.clear()
+            event.app.exit()
+
+        @kb.add("c-c")
+        def ctrl_c(event):
+            self.cancelled = True
+            self.selected.clear()
+            event.app.exit()
+            raise KeyboardInterrupt()
+
+        # Styles
+        style = Style.from_dict(
+            {
+                "title": "bold cyan",
+                "help": "dim",
+                "help-extra": "dim italic",
+                "header": "bold magenta",
+                "section-header": "bold yellow",
+                "sub-header": "bold",
+                "sub-header-latest": "bold cyan",
+                "normal": "",
+                "selected": "green",
+                "cursor": "reverse",
+                "cursor-selected": "reverse green",
+                "latest": "dim cyan",
+                "cursor-latest": "reverse cyan",
+                "footer": "bold",
+                "status": "italic cyan",
+            }
+        )
+
+        # Create control
+        control = FormattedTextControl(
+            text=self._get_content,
+            focusable=True,
+        )
+
+        # Layout
+        layout = Layout(
+            HSplit(
+                [
+                    Window(content=control, wrap_lines=False),
+                ]
+            )
+        )
+
+        # Application
+        app: Application = Application(
+            layout=layout,
+            key_bindings=kb,
+            style=style,
+            full_screen=False,
+            mouse_support=True,
+        )
+
+        # Run
+        app.run()
+
+        if self.cancelled:
+            return []
+
+        return [self.items[i] for i in sorted(self.selected)]
+
+
+def select_xcode_items_interactive(
+    items: list[XcodeItem],
+    title: str = "Select Xcode items to delete",
+) -> list[XcodeItem]:
+    """
+    Display interactive Xcode item selector and return selected items.
+
+    Args:
+        items: List of Xcode items to choose from
+        title: Title to display above the table
+
+    Returns:
+        List of selected items, or empty list if cancelled
+    """
+    if not items:
+        return []
+
+    selector = XcodeSelector(items, title)
     return selector.run()

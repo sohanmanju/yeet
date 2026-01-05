@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import subprocess
-from collections import deque
+import threading
+from collections import deque, OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -13,18 +17,23 @@ import platform
 
 from .utils import (
     DAYS_SINCE_ACCESS,
-    DAYS_SINCE_COMMIT,
     DEFAULT_LARGE_FILE_MB,
-    PROJECT_MARKERS,
     SKIP_FOR_SIZE,
     CacheCategory,
     CacheLocation,
     CacheScanResults,
+    DiskItem,
     LargeFile,
     LargeFileScanResults,
     Project,
     ProjectType,
+    SIZE_LOADING,
     ScanResults,
+    XcodeItem,
+    XcodeItemType,
+    XcodeScanResults,
+    is_macos,
+    parse_xcode_version,
 )
 
 
@@ -1163,6 +1172,11 @@ class CacheScanner:
                     if size < min_size_bytes:
                         continue
 
+                    # Determine if this is an Xcode-related cache
+                    is_xcode = name.startswith("Xcode") or name.startswith(
+                        "CoreSimulator"
+                    )
+
                     cache = CacheLocation(
                         path=path,
                         name=name,
@@ -1170,6 +1184,7 @@ class CacheScanner:
                         size=size,
                         file_count=file_count,
                         last_modified=last_modified,
+                        is_xcode=is_xcode,
                     )
                     results.caches.append(cache)
 
@@ -1182,5 +1197,1101 @@ class CacheScanner:
 
         # Sort by size (largest first)
         results.caches.sort(key=lambda c: c.size, reverse=True)
+
+        return results
+
+
+class XcodeScanner:
+    """
+    Scans for Xcode-related data that can be cleaned up.
+
+    Provides granular control over:
+    - Device Support files (per iOS/watchOS/tvOS/visionOS version)
+    - Derived Data (per project)
+    - Archives (per archive with app version info)
+    - Simulators (per device)
+    - Documentation cache
+    - Device logs
+
+    Only runs on macOS.
+    """
+
+    # Xcode directories relative to home
+    XCODE_PATHS = {
+        "device_support": {
+            "iOS": "Library/Developer/Xcode/iOS DeviceSupport",
+            "watchOS": "Library/Developer/Xcode/watchOS DeviceSupport",
+            "tvOS": "Library/Developer/Xcode/tvOS DeviceSupport",
+            "visionOS": "Library/Developer/Xcode/visionOS DeviceSupport",
+        },
+        "derived_data": "Library/Developer/Xcode/DerivedData",
+        "archives": "Library/Developer/Xcode/Archives",
+        "simulators": "Library/Developer/CoreSimulator/Devices",
+        "documentation": "Library/Developer/Xcode/DocumentationCache",
+        "device_logs": "Library/Developer/Xcode/iOS Device Logs",
+    }
+
+    def __init__(self) -> None:
+        """Initialize the Xcode scanner."""
+        self.home = Path.home()
+
+    def scan(
+        self,
+        progress_callback: Callable[[int, str], None] | None = None,
+    ) -> XcodeScanResults:
+        """
+        Scan for Xcode-related items.
+
+        Args:
+            progress_callback: Optional callback(items_found, current_name)
+
+        Returns:
+            XcodeScanResults containing all found items
+        """
+        results = XcodeScanResults()
+
+        # Only run on macOS
+        if not is_macos():
+            return results
+
+        # Scan each category
+        self._scan_device_support(results, progress_callback)
+        self._scan_derived_data(results, progress_callback)
+        self._scan_archives(results, progress_callback)
+        self._scan_simulator_runtimes(results, progress_callback)
+        self._scan_documentation(results, progress_callback)
+        self._scan_device_logs(results, progress_callback)
+
+        return results
+
+    def _get_directory_size(self, path: Path) -> int:
+        """Get total size of a directory."""
+        total = 0
+        try:
+            for root, _, files in os.walk(path):
+                for fname in files:
+                    try:
+                        fpath = Path(root) / fname
+                        total += fpath.stat().st_size
+                    except (OSError, PermissionError):
+                        continue
+        except (OSError, PermissionError):
+            pass
+        return total
+
+    def _get_directory_mtime(self, path: Path) -> datetime:
+        """Get most recent modification time in a directory."""
+        try:
+            latest = path.stat().st_mtime
+            for root, _, files in os.walk(path):
+                for fname in files:
+                    try:
+                        fpath = Path(root) / fname
+                        mtime = fpath.stat().st_mtime
+                        if mtime > latest:
+                            latest = mtime
+                    except (OSError, PermissionError):
+                        continue
+            return datetime.fromtimestamp(latest)
+        except (OSError, PermissionError):
+            return datetime.now()
+
+    def _scan_device_support(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan Device Support directories for each platform."""
+        # Track latest version per platform for marking
+        platform_versions: dict[str, list[tuple[tuple[int, ...], Path]]] = {}
+
+        for platform_name, rel_path in self.XCODE_PATHS["device_support"].items():
+            support_dir = self.home / rel_path
+
+            if not support_dir.exists() or not support_dir.is_dir():
+                continue
+
+            platform_versions[platform_name] = []
+
+            try:
+                for entry in os.scandir(support_dir):
+                    if not entry.is_dir():
+                        continue
+
+                    try:
+                        version, build = parse_xcode_version(entry.name)
+                        path = Path(entry.path)
+                        size = self._get_directory_size(path)
+                        mtime = self._get_directory_mtime(path)
+
+                        # Track for latest detection
+                        if version:
+                            platform_versions[platform_name].append((version, path))
+
+                        item = XcodeItem(
+                            path=path,
+                            name=entry.name,
+                            item_type=XcodeItemType.DEVICE_SUPPORT,
+                            size=size,
+                            last_modified=mtime,
+                            platform=platform_name,
+                            version=version,
+                            build=build,
+                            is_latest=False,  # Will be set after scanning all
+                        )
+                        results.items.append(item)
+
+                        if progress_callback:
+                            progress_callback(
+                                len(results.items), f"{platform_name} {entry.name}"
+                            )
+
+                    except (OSError, PermissionError) as e:
+                        results.scan_errors.append(f"{entry.path}: {e}")
+
+            except (OSError, PermissionError) as e:
+                results.scan_errors.append(f"{support_dir}: {e}")
+
+        # Mark latest versions per platform
+        for platform_name, versions in platform_versions.items():
+            if not versions:
+                continue
+            # Find the maximum version
+            latest_version = max(versions, key=lambda x: x[0])[0]
+            # Mark all items with this version as latest
+            for item in results.items:
+                if (
+                    item.item_type == XcodeItemType.DEVICE_SUPPORT
+                    and item.platform == platform_name
+                    and item.version == latest_version
+                ):
+                    item.is_latest = True
+
+    def _scan_derived_data(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan Derived Data directory for build artifacts."""
+        derived_data_dir = self.home / self.XCODE_PATHS["derived_data"]
+
+        if not derived_data_dir.exists() or not derived_data_dir.is_dir():
+            return
+
+        try:
+            for entry in os.scandir(derived_data_dir):
+                if not entry.is_dir():
+                    continue
+
+                # Skip ModuleCache and other non-project dirs
+                if entry.name in ("ModuleCache", "ModuleCache.noindex"):
+                    continue
+
+                try:
+                    path = Path(entry.path)
+                    size = self._get_directory_size(path)
+                    mtime = self._get_directory_mtime(path)
+
+                    # Extract project name from folder (format: ProjectName-hash)
+                    parts = entry.name.rsplit("-", 1)
+                    project_name = parts[0] if len(parts) > 1 else entry.name
+
+                    item = XcodeItem(
+                        path=path,
+                        name=project_name,
+                        item_type=XcodeItemType.DERIVED_DATA,
+                        size=size,
+                        last_modified=mtime,
+                        platform=None,
+                        version=None,
+                        build=None,
+                        is_latest=False,  # Derived data can always be deleted
+                    )
+                    results.items.append(item)
+
+                    if progress_callback:
+                        progress_callback(
+                            len(results.items), f"Derived: {project_name}"
+                        )
+
+                except (OSError, PermissionError) as e:
+                    results.scan_errors.append(f"{entry.path}: {e}")
+
+        except (OSError, PermissionError) as e:
+            results.scan_errors.append(f"{derived_data_dir}: {e}")
+
+    def _scan_archives(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan Archives directory for app archives."""
+        import plistlib
+
+        archives_dir = self.home / self.XCODE_PATHS["archives"]
+
+        if not archives_dir.exists() or not archives_dir.is_dir():
+            return
+
+        # Archives are organized by date: Archives/YYYY-MM-DD/*.xcarchive
+        try:
+            for date_entry in os.scandir(archives_dir):
+                if not date_entry.is_dir():
+                    continue
+
+                for archive_entry in os.scandir(date_entry.path):
+                    if not archive_entry.name.endswith(".xcarchive"):
+                        continue
+
+                    try:
+                        path = Path(archive_entry.path)
+                        size = self._get_directory_size(path)
+                        mtime = self._get_directory_mtime(path)
+
+                        # Try to parse Info.plist for app details
+                        app_info = None
+                        display_name = archive_entry.name.replace(".xcarchive", "")
+                        info_plist = path / "Info.plist"
+
+                        if info_plist.exists():
+                            try:
+                                with open(info_plist, "rb") as f:
+                                    plist = plistlib.load(f)
+
+                                app_props = plist.get("ApplicationProperties", {})
+                                app_info = {
+                                    "name": plist.get("Name", display_name),
+                                    "bundle_id": app_props.get(
+                                        "CFBundleIdentifier", "Unknown"
+                                    ),
+                                    "version": app_props.get(
+                                        "CFBundleShortVersionString", "?"
+                                    ),
+                                    "build": app_props.get("CFBundleVersion", "?"),
+                                }
+                                # Create a nice display name
+                                display_name = (
+                                    f"{app_info['name']} {app_info['version']} "
+                                    f"({app_info['build']})"
+                                )
+                            except Exception:
+                                pass
+
+                        item = XcodeItem(
+                            path=path,
+                            name=display_name,
+                            item_type=XcodeItemType.ARCHIVE,
+                            size=size,
+                            last_modified=mtime,
+                            platform=None,
+                            version=None,
+                            build=None,
+                            is_latest=False,
+                            app_info=app_info,
+                        )
+                        results.items.append(item)
+
+                        if progress_callback:
+                            progress_callback(
+                                len(results.items), f"Archive: {display_name}"
+                            )
+
+                    except (OSError, PermissionError) as e:
+                        results.scan_errors.append(f"{archive_entry.path}: {e}")
+
+        except (OSError, PermissionError) as e:
+            results.scan_errors.append(f"{archives_dir}: {e}")
+
+    def _scan_simulator_runtimes(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan for simulator runtimes using xcrun simctl."""
+        import re
+
+        # Try to get runtime list from simctl
+        try:
+            result = subprocess.run(
+                ["xcrun", "simctl", "runtime", "list", "-v"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                # simctl not available or failed
+                results.scan_errors.append(
+                    "Could not list simulator runtimes (xcrun simctl failed)"
+                )
+                return
+
+            output = result.stdout
+        except (subprocess.SubprocessError, FileNotFoundError) as e:
+            results.scan_errors.append(f"Could not run xcrun simctl: {e}")
+            return
+
+        # Parse the output to extract runtime info
+        # Example lines:
+        # iOS 26.2 (23C54) - 5731A96A-F7E6-4DFD-85B1-073AF85985AC
+        #     Size: 7.8G
+        #     Deletable: YES
+
+        # Track versions per platform for marking latest
+        platform_versions: dict[str, list[tuple[tuple[int, ...], int]]] = {}
+
+        current_runtime: dict | None = None
+        current_platform: str | None = None
+
+        for line in output.split("\n"):
+            line = line.strip()
+
+            # Match runtime header: "iOS 26.2 (23C54) - UUID"
+            runtime_match = re.match(
+                r"^(\w+)\s+([\d.]+)\s+\(([^)]+)\)\s+-\s+([A-F0-9-]+)$", line
+            )
+            if runtime_match:
+                # Save previous runtime if exists
+                if current_runtime and current_runtime.get("deletable"):
+                    self._add_runtime_item(
+                        results, current_runtime, platform_versions, progress_callback
+                    )
+
+                platform = runtime_match.group(1)  # iOS, tvOS, watchOS
+                version_str = runtime_match.group(2)  # 26.2
+                build = runtime_match.group(3)  # 23C54
+                uuid = runtime_match.group(4)
+
+                # Parse version
+                try:
+                    version = tuple(int(v) for v in version_str.split("."))
+                except ValueError:
+                    version = None
+
+                current_platform = platform
+                current_runtime = {
+                    "platform": platform,
+                    "version": version,
+                    "version_str": version_str,
+                    "build": build,
+                    "uuid": uuid,
+                    "size": 0,
+                    "deletable": False,
+                    "path": None,
+                }
+                continue
+
+            if current_runtime:
+                # Parse Size: 7.8G
+                size_match = re.match(r"Size:\s+([\d.]+)([KMGT]?)B?", line)
+                if size_match:
+                    size_num = float(size_match.group(1))
+                    size_unit = size_match.group(2)
+                    multipliers = {
+                        "": 1,
+                        "K": 1024,
+                        "M": 1024**2,
+                        "G": 1024**3,
+                        "T": 1024**4,
+                    }
+                    current_runtime["size"] = int(
+                        size_num * multipliers.get(size_unit, 1)
+                    )
+                    continue
+
+                # Parse Deletable: YES/NO
+                if line.startswith("Deletable:"):
+                    current_runtime["deletable"] = "YES" in line
+                    continue
+
+                # Parse Mount Path
+                if line.startswith("Mount Path:"):
+                    current_runtime["path"] = line.split(":", 1)[1].strip()
+                    continue
+
+        # Don't forget the last runtime
+        if current_runtime and current_runtime.get("deletable"):
+            self._add_runtime_item(
+                results, current_runtime, platform_versions, progress_callback
+            )
+
+        # Mark latest versions per platform
+        for platform_name, versions in platform_versions.items():
+            if not versions:
+                continue
+            # Find the maximum version
+            latest_version = max(versions, key=lambda x: x[0])[0]
+            # Mark all items with this version as latest
+            for item in results.items:
+                if (
+                    item.item_type == XcodeItemType.SIMULATOR_RUNTIME
+                    and item.platform == platform_name
+                    and item.version == latest_version
+                ):
+                    item.is_latest = True
+
+    def _add_runtime_item(
+        self,
+        results: XcodeScanResults,
+        runtime: dict,
+        platform_versions: dict,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Add a simulator runtime item to results."""
+        platform = runtime["platform"]
+        version = runtime["version"]
+        version_str = runtime["version_str"]
+        build = runtime["build"]
+
+        # Display name: "tvOS 16.0 (20J373)"
+        display_name = f"{platform} {version_str} ({build})"
+
+        # Track for latest detection
+        if version:
+            if platform not in platform_versions:
+                platform_versions[platform] = []
+            platform_versions[platform].append((version, len(results.items)))
+
+        item = XcodeItem(
+            path=Path(runtime.get("path") or f"/simctl:{runtime['uuid']}"),
+            name=display_name,
+            item_type=XcodeItemType.SIMULATOR_RUNTIME,
+            size=runtime["size"],
+            last_modified=datetime.now(),  # simctl doesn't give us this
+            platform=platform,
+            version=version,
+            build=build,
+            is_latest=False,
+            app_info={"uuid": runtime["uuid"]},  # Store UUID for deletion
+        )
+        results.items.append(item)
+
+        if progress_callback:
+            progress_callback(len(results.items), f"Runtime: {display_name}")
+
+    def _scan_documentation(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan Documentation cache directory."""
+        docs_dir = self.home / self.XCODE_PATHS["documentation"]
+
+        if not docs_dir.exists() or not docs_dir.is_dir():
+            return
+
+        try:
+            size = self._get_directory_size(docs_dir)
+            mtime = self._get_directory_mtime(docs_dir)
+
+            # Only add if there's actual content
+            if size > 0:
+                item = XcodeItem(
+                    path=docs_dir,
+                    name="Documentation Cache",
+                    item_type=XcodeItemType.DOCUMENTATION,
+                    size=size,
+                    last_modified=mtime,
+                    platform=None,
+                    version=None,
+                    build=None,
+                    is_latest=False,
+                )
+                results.items.append(item)
+
+                if progress_callback:
+                    progress_callback(len(results.items), "Documentation Cache")
+
+        except (OSError, PermissionError) as e:
+            results.scan_errors.append(f"{docs_dir}: {e}")
+
+    def _scan_device_logs(
+        self,
+        results: XcodeScanResults,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Scan Device Logs directory."""
+        logs_dir = self.home / self.XCODE_PATHS["device_logs"]
+
+        if not logs_dir.exists() or not logs_dir.is_dir():
+            return
+
+        try:
+            # Scan per-device log folders
+            for entry in os.scandir(logs_dir):
+                if not entry.is_dir():
+                    continue
+
+                try:
+                    path = Path(entry.path)
+                    size = self._get_directory_size(path)
+                    mtime = self._get_directory_mtime(path)
+
+                    # Only add if there's actual content
+                    if size > 0:
+                        item = XcodeItem(
+                            path=path,
+                            name=f"Device Logs: {entry.name}",
+                            item_type=XcodeItemType.DEVICE_LOGS,
+                            size=size,
+                            last_modified=mtime,
+                            platform=None,
+                            version=None,
+                            build=None,
+                            is_latest=False,
+                        )
+                        results.items.append(item)
+
+                        if progress_callback:
+                            progress_callback(len(results.items), f"Logs: {entry.name}")
+
+                except (OSError, PermissionError) as e:
+                    results.scan_errors.append(f"{entry.path}: {e}")
+
+        except (OSError, PermissionError) as e:
+            results.scan_errors.append(f"{logs_dir}: {e}")
+
+
+class DiskExplorer:
+    """
+    Explores disk directories by size with interactive navigation.
+
+    Features:
+    - Lazy loading of directory sizes
+    - Caching for fast re-navigation
+    - Minimum size filtering
+    - Warning for dangerous system paths
+    """
+
+    # Paths that should trigger a warning before deletion
+    DANGEROUS_PATHS = frozenset(
+        {
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/var",
+            "/etc",
+            "/Applications",
+            "/Library",
+            "/private",
+            "/Users/Shared",
+            "/.Spotlight-V100",
+            "/.fseventsd",
+            "/cores",
+            "/opt",
+        }
+    )
+
+    # Paths to completely hide (not useful for cleanup)
+    HIDDEN_SYSTEM_PATHS = frozenset(
+        {
+            "/dev",
+            "/proc",
+            "/sys",
+            "/net",
+            "/home",  # On macOS this is usually a symlink
+            "/.vol",
+            "/Volumes",  # Could be confusing with multiple volumes
+        }
+    )
+
+    # Default minimum size: 5 MB
+    DEFAULT_MIN_SIZE = 5 * 1024 * 1024
+
+    # Default cache file path
+    DEFAULT_CACHE_PATH = Path.home() / ".cache" / "yeet" / "sizes.json"
+
+    # Maximum number of entries in size cache (LRU eviction)
+    MAX_CACHE_SIZE = 10000
+
+    def __init__(self, min_size_bytes: int = DEFAULT_MIN_SIZE) -> None:
+        """
+        Initialize the disk explorer.
+
+        Args:
+            min_size_bytes: Minimum size in bytes to show items (default 5 MB)
+        """
+        self.min_size_bytes = min_size_bytes
+        # Use OrderedDict for LRU cache behavior
+        self._size_cache: OrderedDict[str, int] = OrderedDict()
+        self._active_processes: list[subprocess.Popen] = []
+        self._process_lock = threading.Lock()
+
+    def scan_directory(
+        self,
+        path: Path,
+        include_small: bool = False,
+    ) -> list[DiskItem]:
+        """
+        Scan a directory and return items sorted by size (largest first).
+
+        Directories initially have size=SIZE_LOADING (-1) for lazy loading.
+        Files get their size immediately.
+
+        Args:
+            path: Directory to scan
+            include_small: If True, include items below min_size_bytes
+
+        Returns:
+            List of DiskItem sorted by size (largest first, loading items last)
+        """
+        items: list[DiskItem] = []
+
+        try:
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    try:
+                        # Skip hidden system paths
+                        if self.is_hidden_system(Path(entry.path)):
+                            continue
+
+                        stat = entry.stat(follow_symlinks=False)
+                        modified = datetime.fromtimestamp(stat.st_mtime)
+
+                        if entry.is_dir(follow_symlinks=False):
+                            # Check cache first
+                            cached_size = self._size_cache.get(entry.path)
+                            size = (
+                                cached_size if cached_size is not None else SIZE_LOADING
+                            )
+
+                            # Skip small directories if we know their size
+                            if (
+                                not include_small
+                                and size != SIZE_LOADING
+                                and size < self.min_size_bytes
+                            ):
+                                continue
+
+                            items.append(
+                                DiskItem(
+                                    path=Path(entry.path),
+                                    name=entry.name,
+                                    size=size,
+                                    is_dir=True,
+                                    modified=modified,
+                                    item_count=None,
+                                )
+                            )
+                        elif entry.is_file(follow_symlinks=False):
+                            # Use st_blocks for actual disk usage (handles sparse files)
+                            size = stat.st_blocks * 512
+
+                            # Skip small files
+                            if not include_small and size < self.min_size_bytes:
+                                continue
+
+                            items.append(
+                                DiskItem(
+                                    path=Path(entry.path),
+                                    name=entry.name,
+                                    size=size,
+                                    is_dir=False,
+                                    modified=modified,
+                                    item_count=None,
+                                )
+                            )
+
+                    except (OSError, PermissionError):
+                        continue
+
+        except (OSError, PermissionError):
+            pass
+
+        # Sort: known sizes first (largest to smallest), then loading items
+        items.sort(
+            key=lambda x: (
+                x.size == SIZE_LOADING,
+                -x.size if x.size != SIZE_LOADING else 0,
+            )
+        )
+
+        return items
+
+    def calculate_size(self, path: Path) -> int:
+        """
+        Calculate the total size of a path (file or directory).
+
+        Uses the `du` command for directories (much faster than Python os.walk),
+        and st_blocks for files to handle sparse files correctly.
+
+        Results are cached for fast re-navigation.
+
+        Args:
+            path: Path to calculate size for
+
+        Returns:
+            Size in bytes (actual disk usage)
+        """
+        path_str = str(path)
+
+        # Check cache first (and mark as recently used)
+        if path_str in self._size_cache:
+            self._size_cache.move_to_end(path_str)
+            return self._size_cache[path_str]
+
+        total = 0
+
+        try:
+            if path.is_file():
+                stat = path.stat()
+                # Use st_blocks for actual disk usage (handles sparse files)
+                # st_blocks is in 512-byte units
+                total = stat.st_blocks * 512
+            elif path.is_dir():
+                # Use du command - much faster than Python os.walk
+                # -s: summarize (total only)
+                # -k: output in KB
+                # Note: du may return non-zero exit code due to permission errors
+                # but still output the size, so we check stdout regardless
+                proc = subprocess.Popen(
+                    ["du", "-sk", path_str],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                # Track the process so it can be killed on shutdown
+                with self._process_lock:
+                    self._active_processes.append(proc)
+                try:
+                    stdout, _ = proc.communicate(timeout=60)
+                    if stdout:
+                        # Parse output: "12345\t/path/to/dir"
+                        try:
+                            size_kb = stdout.split()[0]
+                            total = int(size_kb) * 1024
+                        except (ValueError, IndexError):
+                            pass
+                finally:
+                    # Remove from active processes
+                    with self._process_lock:
+                        if proc in self._active_processes:
+                            self._active_processes.remove(proc)
+        except (OSError, PermissionError, subprocess.TimeoutExpired, ValueError):
+            pass
+
+        # Cache the result with LRU eviction
+        self._size_cache[path_str] = total
+        # Move to end (most recently used)
+        self._size_cache.move_to_end(path_str)
+        # Evict oldest entries if cache is too large
+        while len(self._size_cache) > self.MAX_CACHE_SIZE:
+            self._size_cache.popitem(last=False)
+        return total
+
+    def is_dangerous(self, path: Path) -> bool:
+        """
+        Check if a path is a system path that needs a warning before deletion.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            True if path is dangerous
+        """
+        path_str = str(path)
+
+        # Check exact matches
+        if path_str in self.DANGEROUS_PATHS:
+            return True
+
+        # Check if path starts with dangerous paths
+        for dangerous in self.DANGEROUS_PATHS:
+            if path_str.startswith(dangerous + "/"):
+                # Only first level is dangerous
+                # e.g., /Applications/Xcode.app is dangerous
+                # but /Users/sohan/Applications is not
+                remaining = path_str[len(dangerous) + 1 :]
+                if "/" not in remaining:
+                    return True
+
+        return False
+
+    def is_hidden_system(self, path: Path) -> bool:
+        """
+        Check if a path should be completely hidden from the explorer.
+
+        Args:
+            path: Path to check
+
+        Returns:
+            True if path should be hidden
+        """
+        path_str = str(path)
+
+        for hidden in self.HIDDEN_SYSTEM_PATHS:
+            if path_str == hidden or path_str.startswith(hidden + "/"):
+                return True
+
+        return False
+
+    def clear_cache(self) -> None:
+        """Clear the size cache."""
+        self._size_cache.clear()
+
+    def kill_active_processes(self) -> int:
+        """
+        Kill all active du processes.
+
+        Call this when shutting down to ensure clean exit.
+
+        Returns:
+            Number of processes killed
+        """
+        killed = 0
+        with self._process_lock:
+            for proc in self._active_processes:
+                try:
+                    proc.terminate()
+                    killed += 1
+                except (OSError, ProcessLookupError):
+                    pass
+            self._active_processes.clear()
+        return killed
+
+    def get_cached_size(self, path: Path) -> int | None:
+        """
+        Get cached size for a path, or None if not cached.
+
+        Args:
+            path: Path to look up
+
+        Returns:
+            Cached size in bytes, or None
+        """
+        return self._size_cache.get(str(path))
+
+    def save_cache(self, cache_path: Path | None = None) -> bool:
+        """
+        Save the size cache to disk.
+
+        Args:
+            cache_path: Path to save cache to (default: ~/.cache/yeet/sizes.json)
+
+        Returns:
+            True on success, False on failure
+        """
+        if cache_path is None:
+            cache_path = self.DEFAULT_CACHE_PATH
+
+        try:
+            # Create parent directories if needed
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+            cache_data = {
+                "version": 1,
+                "timestamp": datetime.now().isoformat(),
+                "sizes": self._size_cache,
+            }
+
+            with open(cache_path, "w") as f:
+                json.dump(cache_data, f)
+
+            return True
+        except (OSError, PermissionError, TypeError):
+            return False
+
+    def load_cache(
+        self, cache_path: Path | None = None, max_age_hours: int = 24
+    ) -> int:
+        """
+        Load the size cache from disk.
+
+        Args:
+            cache_path: Path to load cache from (default: ~/.cache/yeet/sizes.json)
+            max_age_hours: Skip entries older than this many hours
+
+        Returns:
+            Count of entries loaded
+        """
+        if cache_path is None:
+            cache_path = self.DEFAULT_CACHE_PATH
+
+        try:
+            if not cache_path.exists():
+                return 0
+
+            with open(cache_path, "r") as f:
+                cache_data = json.load(f)
+
+            # Validate structure
+            if not isinstance(cache_data, dict):
+                return 0
+            if "sizes" not in cache_data or not isinstance(cache_data["sizes"], dict):
+                return 0
+
+            # Check cache age
+            timestamp_str = cache_data.get("timestamp")
+            if timestamp_str:
+                try:
+                    cache_time = datetime.fromisoformat(timestamp_str)
+                    age_hours = (datetime.now() - cache_time).total_seconds() / 3600
+                    if age_hours > max_age_hours:
+                        return 0
+                except (ValueError, TypeError):
+                    pass
+
+            # Load entries, validating each one
+            loaded_count = 0
+            for path_str, size in cache_data["sizes"].items():
+                if not isinstance(size, int):
+                    continue
+
+                try:
+                    path = Path(path_str)
+                    if not path.exists():
+                        continue
+
+                    # Check if directory mtime changed (invalidates cache)
+                    if path.is_dir():
+                        # Skip validation for now - just load if exists
+                        pass
+
+                    self._size_cache[path_str] = size
+                    loaded_count += 1
+                except (OSError, PermissionError):
+                    continue
+
+            return loaded_count
+        except (OSError, PermissionError, json.JSONDecodeError, TypeError):
+            return 0
+
+    def invalidate_cache(self, path: Path) -> None:
+        """
+        Remove a specific path and all its children from the cache.
+
+        Args:
+            path: Path to invalidate
+        """
+        path_str = str(path)
+        path_prefix = path_str + "/"
+
+        # Find all keys to remove
+        keys_to_remove = [
+            key
+            for key in self._size_cache
+            if key == path_str or key.startswith(path_prefix)
+        ]
+
+        # Remove them
+        for key in keys_to_remove:
+            del self._size_cache[key]
+
+    def calculate_sizes_parallel(
+        self,
+        paths: list[Path],
+        callback: Callable[[Path, int], None] | None = None,
+        max_workers: int = 4,
+        stop_event: threading.Event | None = None,
+    ) -> dict[Path, int]:
+        """
+        Calculate sizes for multiple paths in parallel using a thread pool.
+
+        Uses ThreadPoolExecutor to calculate sizes concurrently, which can
+        significantly speed up size calculation for many directories.
+
+        Args:
+            paths: List of paths to calculate sizes for
+            callback: Optional callback called with (path, size) as each completes
+            max_workers: Maximum number of worker threads (default 4)
+            stop_event: Optional threading.Event to signal early termination
+
+        Returns:
+            Dict mapping each path to its calculated size
+        """
+        results: dict[Path, int] = {}
+
+        if not paths:
+            return results
+
+        # Use a non-blocking approach so we can check stop_event
+        executor = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            # Submit all tasks
+            future_to_path = {
+                executor.submit(self.calculate_size, path): path for path in paths
+            }
+
+            # Process results as they complete
+            for future in as_completed(future_to_path):
+                # Check if we should stop
+                if stop_event is not None and stop_event.is_set():
+                    # Cancel remaining futures
+                    for f in future_to_path:
+                        f.cancel()
+                    break
+
+                path = future_to_path[future]
+                try:
+                    size = future.result(timeout=0.1)
+                    results[path] = size
+                    if callback is not None:
+                        callback(path, size)
+                except Exception as e:
+                    # Log the error and continue with other paths
+                    logging.debug(f"Error calculating size for {path}: {e}")
+                    # Store 0 for failed paths so caller knows it was processed
+                    results[path] = 0
+                    if callback is not None:
+                        callback(path, 0)
+        finally:
+            # Shutdown without waiting - let threads die naturally
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        return results
+
+    def calculate_sizes_prioritized(
+        self,
+        paths: list[Path],
+        priority_paths: list[Path],
+        callback: Callable[[Path, int], None] | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> dict[Path, int]:
+        """
+        Calculate sizes with priority paths processed first.
+
+        This method calculates sizes for priority_paths first (typically visible
+        items in the UI), then calculates the remaining paths. This allows the
+        UI to show sizes for visible items as quickly as possible.
+
+        Args:
+            paths: All paths that need size calculation
+            priority_paths: Subset of paths to calculate first (visible items)
+            callback: Optional callback called with (path, size) as each completes
+            stop_event: Optional threading.Event to signal early termination
+
+        Returns:
+            Dict mapping each path to its calculated size
+        """
+        results: dict[Path, int] = {}
+
+        # Convert to sets for efficient lookup
+        all_paths_set = set(paths)
+        priority_set = set(priority_paths)
+
+        # Ensure priority paths are in the paths list
+        priority_to_process = [p for p in priority_paths if p in all_paths_set]
+
+        # Remaining paths (not in priority)
+        remaining_paths = [p for p in paths if p not in priority_set]
+
+        # Process priority paths first
+        if priority_to_process:
+            if stop_event is not None and stop_event.is_set():
+                return results
+            priority_results = self.calculate_sizes_parallel(
+                priority_to_process, callback=callback, stop_event=stop_event
+            )
+            results.update(priority_results)
+
+        # Then process remaining paths
+        if remaining_paths:
+            if stop_event is not None and stop_event.is_set():
+                return results
+            remaining_results = self.calculate_sizes_parallel(
+                remaining_paths, callback=callback, stop_event=stop_event
+            )
+            results.update(remaining_results)
 
         return results
