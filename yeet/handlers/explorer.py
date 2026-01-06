@@ -21,7 +21,7 @@ from rich.progress import (
 
 from ..config import get_config
 from ..scanner import DiskExplorer
-from ..utils import format_size, SIZE_LOADING, trash_available
+from ..utils import format_size, SIZE_LOADING
 
 from .common import delete_item, get_deletion_progress_context, check_trash_availability
 

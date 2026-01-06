@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-from typing import Callable
 
 from prompt_toolkit import Application
 from prompt_toolkit.key_binding import KeyBindings

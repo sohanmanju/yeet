@@ -304,11 +304,8 @@ class DiskExplorerUI:
         """Get the total size of items in the current directory."""
         # Sum up all known item sizes
         total = 0
-        all_known = True
         for item in self.items:
-            if item.size == SIZE_LOADING:
-                all_known = False
-            elif item.size > 0:
+            if item.size > 0 and item.size != SIZE_LOADING:
                 total += item.size
         return total if total > 0 else None
 
@@ -493,7 +490,7 @@ class DiskExplorerUI:
         lines.append(("class:overlay-border", f"  │{' ' * (box_width - 2)}│\n"))
 
         # Header row
-        header = f"  Extension       Count        Size       % of Total"
+        header = "  Extension       Count        Size       % of Total"
         lines.append(("class:overlay-border", "  │"))
         lines.append(("class:overlay-header", f"{header:<{box_width - 4}}"))
         lines.append(("class:overlay-border", "│\n"))

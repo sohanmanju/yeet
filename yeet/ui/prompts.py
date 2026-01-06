@@ -9,7 +9,7 @@ from prompt_toolkit import prompt
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm
 from rich.panel import Panel
 
 from ..utils import Project, format_size, validate_directory
