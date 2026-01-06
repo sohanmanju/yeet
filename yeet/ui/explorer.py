@@ -11,6 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import FormattedText
+from shutil import get_terminal_size
 
 from ..scanner import DiskExplorer
 from ..utils import (
@@ -219,15 +220,18 @@ class DiskExplorerUI:
         # Build a mapping from path to item for quick lookup
         path_to_item = {item.path: item for item in items_to_load}
 
-        # Calculate which items are currently visible (viewport of ~20 items around cursor)
+        # Calculate which items are currently visible (dynamic viewport based on terminal)
+        term_height = get_terminal_size().lines
+        viewport_size = max(5, term_height - 16)
         total = len(self.items)
-        if total <= 20:
+        if total <= viewport_size:
             start, end = 0, total
         else:
-            start = max(0, self.cursor - 10)
-            end = min(total, start + 20)
-            if end - start < 20:
-                start = max(0, end - 20)
+            half_viewport = viewport_size // 2
+            start = max(0, self.cursor - half_viewport)
+            end = min(total, start + viewport_size)
+            if end - start < viewport_size:
+                start = max(0, end - viewport_size)
 
         # Get visible items that are still loading
         visible_items = [
@@ -682,16 +686,22 @@ class DiskExplorerUI:
                     ("class:dim", "  (empty or no items above size threshold)\n")
                 )
         else:
-            # Show up to 20 items around cursor
+            # Calculate viewport size based on terminal height
+            # Reserve lines for: header(~8), footer(~8), info panel if shown(~6)
+            term_height = get_terminal_size().lines
+            reserved_lines = 16 if not self.show_info_panel else 22
+            viewport_size = max(5, term_height - reserved_lines)
+
             total = len(display_items)
-            if total <= 20:
+            if total <= viewport_size:
                 start, end = 0, total
             else:
                 # Window around cursor
-                start = max(0, self.cursor - 10)
-                end = min(total, start + 20)
-                if end - start < 20:
-                    start = max(0, end - 20)
+                half_viewport = viewport_size // 2
+                start = max(0, self.cursor - half_viewport)
+                end = min(total, start + viewport_size)
+                if end - start < viewport_size:
+                    start = max(0, end - viewport_size)
 
             if start > 0:
                 lines.append(("class:dim", f"  ... {start} more items above ...\n"))
@@ -1245,7 +1255,7 @@ class DiskExplorerUI:
             layout=layout,
             key_bindings=kb,
             style=style,
-            full_screen=False,
+            full_screen=True,
             mouse_support=True,
         )
 
