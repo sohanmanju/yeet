@@ -5,6 +5,19 @@ All notable changes to yeet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2025-01-06
+
+### Fixed
+- Fixed "System Cache" deletion timing out or failing with permission errors on macOS
+  - The generic `~/Library/Caches` entry was removed (contained protected subdirectories)
+  - Individual caches inside are still scanned and deletable
+- Increased trash operation timeout from 30s to 120s for large directories
+- Improved error messages for permission and timeout failures
+
+### Added
+- New cache definitions: Playwright Cache, node-gyp Cache, App Updater Caches
+- Permissions documentation in README explaining which paths require sudo
+
 ## [0.2.0] - 2025-01-05
 
 ### Added
