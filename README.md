@@ -61,11 +61,13 @@ uv tool install git+https://github.com/sohanmanju/yeet.git
 # Using pip
 pip install git+https://github.com/sohanmanju/yeet.git
 
+# Don't have Python/uv set up? (macOS)
+brew install uv && uv tool install git+https://github.com/sohanmanju/yeet.git
+
 # From source
 git clone https://github.com/sohanmanju/yeet.git
 cd yeet
-uv sync
-uv run yeet
+pip install -e .
 ```
 
 ## Usage
