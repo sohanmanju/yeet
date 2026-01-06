@@ -586,11 +586,13 @@ def _trash_macos(path: Path) -> tuple[bool, str]:
                 delete POSIX file "{path}"
             end tell
         '''
+        # Use a longer timeout (120s) for large directories
+        # Finder can be slow when trashing many files
         result = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=120,
         )
 
         if result.returncode == 0:
@@ -598,10 +600,16 @@ def _trash_macos(path: Path) -> tuple[bool, str]:
         else:
             # If osascript fails, provide the error message
             error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+            # Check for common permission errors
+            if (
+                "permission" in error_msg.lower()
+                or "not have permission" in error_msg.lower()
+            ):
+                return False, f"Permission denied (some items may be protected): {path}"
             return False, f"Failed to move to Trash: {error_msg}"
 
     except subprocess.TimeoutExpired:
-        return False, f"Timeout moving to Trash: {path}"
+        return False, f"Timeout moving to Trash (directory may be too large): {path}"
     except FileNotFoundError:
         return False, "osascript command not found"
     except Exception as e:

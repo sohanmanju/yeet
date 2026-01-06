@@ -798,6 +798,24 @@ class CacheScanner:
                 "windows": ["AppData/Local/turbo"],
             },
         ),
+        (
+            "Playwright Cache",
+            CacheCategory.BUILD_TOOL,
+            {
+                "darwin": ["Library/Caches/ms-playwright"],
+                "linux": [".cache/ms-playwright"],
+                "windows": ["AppData/Local/ms-playwright"],
+            },
+        ),
+        (
+            "node-gyp Cache",
+            CacheCategory.BUILD_TOOL,
+            {
+                "darwin": ["Library/Caches/node-gyp"],
+                "linux": [".cache/node-gyp"],
+                "windows": ["AppData/Local/node-gyp"],
+            },
+        ),
         # =====================
         # CONTAINERS
         # =====================
@@ -927,12 +945,19 @@ class CacheScanner:
         # =====================
         # SYSTEM CACHES
         # =====================
+        # Note: We don't include the top-level cache directories (~/Library/Caches,
+        # ~/.cache) because:
+        # 1. They contain many app-specific caches we already scan individually
+        # 2. Some subdirectories have restricted permissions (SIP-protected on macOS)
+        # 3. Deleting them as a whole often fails or times out
+        # Instead, we scan specific cache subdirectories above.
         (
-            "System Cache",
+            "Temporary Files",
             CacheCategory.SYSTEM,
             {
-                "darwin": ["Library/Caches"],
-                "linux": [".cache"],
+                # Only include truly temporary directories that are safe to clear
+                "darwin": ["Library/Caches/TemporaryItems"],
+                "linux": [".cache/tmp"],
                 "windows": ["AppData/Local/Temp"],
             },
         ),
@@ -1066,6 +1091,20 @@ class CacheScanner:
                     "AppData/Roaming/discord/Cache",
                     "AppData/Local/Spotify/Storage",
                 ],
+            },
+        ),
+        (
+            "App Updater Caches",
+            CacheCategory.OTHER,
+            {
+                # Many Electron apps use Squirrel/ShipIt for updates
+                # These caches can grow large and are safe to clear
+                "darwin": [
+                    "Library/Caches/com.microsoft.autoupdate2",
+                    "Library/Caches/com.microsoft.autoupdate.fba",
+                ],
+                "linux": [],
+                "windows": [],
             },
         ),
         (
