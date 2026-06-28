@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
+from shutil import get_terminal_size
 from pathlib import Path
 
 from prompt_toolkit import Application
@@ -18,7 +19,6 @@ from ..utils import (
     DiskItem,
     SIZE_LOADING,
     format_size,
-    format_days_ago,
     open_path,
 )
 from . import explorer_render

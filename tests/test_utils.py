@@ -5,8 +5,6 @@ from pathlib import Path
 import tempfile
 import os
 
-import pytest
-
 from yeet.utils import (
     format_size,
     format_days_ago,

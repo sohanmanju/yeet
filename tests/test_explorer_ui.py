@@ -1,7 +1,6 @@
 """Tests for DiskExplorerUI filtering and info behavior."""
 
 from datetime import datetime
-from pathlib import Path
 
 from yeet.scanner import DiskExplorer
 from yeet.ui.explorer import DiskExplorerUI

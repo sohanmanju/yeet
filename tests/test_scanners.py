@@ -1,11 +1,7 @@
 """Tests for yeet.scanners module."""
 
 import tempfile
-from datetime import datetime
 from pathlib import Path
-import os
-
-import pytest
 
 from yeet.scanners import (
     ProjectScanner,

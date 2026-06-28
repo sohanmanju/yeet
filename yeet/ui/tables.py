@@ -137,15 +137,11 @@ def display_deletion_results(
 
     total_reclaimed = sum(p.total_size for p, success, _ in deleted_projects if success)
 
-    action_noun = (
-        "would be moved to trash" if use_trash else "would be deleted"
-    ) if dry_run else ("moved to trash" if use_trash else "deleted")
     title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
     size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
     item_label = "would be moved to trash" if dry_run and use_trash else (
         "would be deleted" if dry_run else ("moved to trash" if use_trash else "deleted")
     )
-    items_label = "would be deleted" if dry_run else "deleted"
 
     result_text = (
         f"[bold]{title_action} Complete[/]\n\n"
@@ -229,9 +225,6 @@ def display_cache_deletion_results(
 
     total_reclaimed = sum(c.size for c, success, _ in deleted_caches if success)
 
-    action_noun = (
-        "would be moved to trash" if use_trash else "would be cleared"
-    ) if dry_run else ("moved to trash" if use_trash else "cleared")
     title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Cache Cleanup")
     size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
     item_label = "would be moved to trash" if dry_run and use_trash else (
@@ -325,7 +318,7 @@ def display_xcode_deletion_results(
     console.print(
         Panel(
             f"[bold]{'Dry Run' if dry_run else 'Xcode Cleanup'} Complete[/]\n\n"
-            f"  Items {items_label}: [green]{items_success}[/]"
+            f"  Items {'would be deleted' if dry_run else 'deleted'}: [green]{items_success}[/]"
             f"{f' ([red]{items_failed} failed[/])' if items_failed else ''}\n\n"
             f"  [bold green]{'Potential space reclaimed' if dry_run else 'Space reclaimed'}: {format_size(total_reclaimed)}[/]",
             title="Cleanup Summary",
