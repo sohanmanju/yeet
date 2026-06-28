@@ -21,6 +21,7 @@ from yeet.utils import (
     delete_file,
     delete_directory,
 )
+from yeet.config import Config
 
 
 class TestFormatSize:
@@ -395,3 +396,18 @@ class TestDeleteDirectory:
             assert "Not a directory" in msg
         finally:
             path.unlink()
+
+
+class TestConfigBookmarks:
+    """Tests for config bookmark persistence."""
+
+    def test_bookmarks_round_trip(self):
+        config = Config(bookmarks=["~/Downloads", "~/Projects"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "config.toml"
+            assert config.save(path)
+
+            loaded = Config.load(path)
+
+            assert loaded.bookmarks == ["~/Downloads", "~/Projects"]

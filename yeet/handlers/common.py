@@ -14,6 +14,9 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from ..config import Config
+from ..history import make_history_entry, write_history_entry
+from ..safety import is_protected_path
 from ..utils import (
     delete_directory,
     delete_file,
@@ -22,7 +25,13 @@ from ..utils import (
 )
 
 
-def delete_item(path: Path, use_trash: bool) -> tuple[bool, str]:
+def delete_item(
+    path: Path,
+    use_trash: bool,
+    *,
+    dry_run: bool = False,
+    config: Config | None = None,
+) -> tuple[bool, str]:
     """
     Delete a file or directory, optionally using system trash.
 
@@ -33,17 +42,44 @@ def delete_item(path: Path, use_trash: bool) -> tuple[bool, str]:
     Returns:
         Tuple of (success, message)
     """
+    if is_protected_path(path, config):
+        return False, f"Protected path: {path}"
+
+    if dry_run:
+        action = "move to trash" if use_trash else "delete"
+        return True, f"Dry run: would {action}: {path}"
+
     if use_trash and trash_available():
         return move_to_trash(path)
-    else:
-        # Fall back to permanent deletion
-        if use_trash and not trash_available():
-            # Warn user that trash is not available
-            pass  # Warning will be shown elsewhere
-        if path.is_dir():
-            return delete_directory(path)
-        else:
-            return delete_file(path)
+
+    if path.is_dir():
+        return delete_directory(path)
+    return delete_file(path)
+
+
+def record_history(
+    workflow: str,
+    *,
+    dry_run: bool,
+    status: str,
+    selected_count: int = 0,
+    deleted_count: int = 0,
+    reclaimed_bytes: int = 0,
+    scanned_count: int | None = None,
+    extra: dict | None = None,
+) -> bool:
+    """Persist a history entry."""
+    entry = make_history_entry(
+        workflow,
+        dry_run=dry_run,
+        status=status,
+        selected_count=selected_count,
+        deleted_count=deleted_count,
+        reclaimed_bytes=reclaimed_bytes,
+        scanned_count=scanned_count,
+        extra=extra,
+    )
+    return write_history_entry(entry)
 
 
 def get_progress_context(console: Console, transient: bool = True) -> Progress:

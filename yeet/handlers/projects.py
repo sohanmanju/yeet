@@ -17,12 +17,14 @@ from ..utils import (
 from ..ui.prompts import get_directory_prompt, confirm_deletion
 from ..ui.tables import display_scan_summary, display_deletion_results
 from ..ui.selector import select_projects_interactive
+from ..json_output import project_scan_payload, dump_json
 
 from .common import (
     delete_item,
     get_progress_context,
     get_deletion_progress_context,
     check_trash_availability,
+    record_history,
 )
 
 
@@ -59,6 +61,8 @@ def perform_project_deletions(
     console: Console,
     projects: list[Project],
     use_trash: bool = False,
+    dry_run: bool = False,
+    config=None,
 ) -> list[tuple[Project, bool, str]]:
     """Delete selected projects with progress."""
     results: list[tuple[Project, bool, str]] = []
@@ -70,7 +74,12 @@ def perform_project_deletions(
 
         for project in projects:
             progress.update(task, description=f"{action_word}: {project.name}")
-            success, msg = delete_item(project.path, use_trash)
+            success, msg = delete_item(
+                project.path,
+                use_trash,
+                dry_run=dry_run,
+                config=config,
+            )
             results.append((project, success, msg))
             progress.advance(task)
 
@@ -81,10 +90,25 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
     """Handle the stale projects workflow."""
     # Get config for trash setting
     config = get_config()
-    use_trash = check_trash_availability(console, config.use_trash)
+    dry_run = getattr(args, "dry_run", False)
+    json_mode = getattr(args, "json", False)
+    use_trash = (
+        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+    )
 
     # Get directory
-    if args.directory:
+    if json_mode:
+        if args.directory:
+            from ..utils import validate_directory
+
+            is_valid, result = validate_directory(args.directory)
+            if not is_valid:
+                console.print(f"[red]Error:[/] {result}")
+                return
+            root = result
+        else:
+            root = Path(config.start_path).expanduser()
+    elif args.directory:
         from ..utils import validate_directory
 
         is_valid, result = validate_directory(args.directory)
@@ -97,14 +121,27 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
         root = get_directory_prompt(console)
 
     # Run scan
-    console.print()
-    results = run_project_scan(console, root, days_threshold=args.days)
+    scan_console = Console(stderr=True) if json_mode else console
+    if not json_mode:
+        console.print()
+    results = run_project_scan(scan_console, root, days_threshold=args.days)
+
+    if json_mode:
+        dump_json(project_scan_payload(results))
+        return
 
     # Display results
     display_scan_summary(console, results)
 
     if not results.projects:
         console.print("\n[dim]No stale projects found.[/]")
+        record_history(
+            "projects",
+            dry_run=dry_run,
+            status="empty",
+            scanned_count=results.total_projects_scanned,
+            extra={"found_count": 0},
+        )
         return
 
     # Sort and select
@@ -118,10 +155,44 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
     if projects_to_delete:
         if confirm_deletion(console, projects_to_delete, use_trash=use_trash):
             deletion_results = perform_project_deletions(
-                console, projects_to_delete, use_trash=use_trash
+                console,
+                projects_to_delete,
+                use_trash=use_trash,
+                dry_run=dry_run,
+                config=config,
             )
-            display_deletion_results(console, deletion_results, use_trash=use_trash)
+            display_deletion_results(
+                console, deletion_results, use_trash=use_trash, dry_run=dry_run
+            )
+            reclaimed = sum(
+                p.total_size for p, success, _ in deletion_results if success and not dry_run
+            )
+            record_history(
+                "projects",
+                dry_run=dry_run,
+                status="completed",
+                selected_count=len(projects_to_delete),
+                deleted_count=sum(1 for _, success, _ in deletion_results if success),
+                reclaimed_bytes=reclaimed,
+                scanned_count=results.total_projects_scanned,
+                extra={"found_count": len(results.projects)},
+            )
         else:
             console.print("\n[yellow]Deletion cancelled.[/]")
+            record_history(
+                "projects",
+                dry_run=dry_run,
+                status="cancelled",
+                selected_count=len(projects_to_delete),
+                scanned_count=results.total_projects_scanned,
+                extra={"found_count": len(results.projects)},
+            )
     else:
         console.print("\n[dim]No projects selected for deletion.[/]")
+        record_history(
+            "projects",
+            dry_run=dry_run,
+            status="no-selection",
+            scanned_count=results.total_projects_scanned,
+            extra={"found_count": len(results.projects)},
+        )

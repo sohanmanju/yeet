@@ -1,4 +1,4 @@
-"""Interactive project selector with keyboard navigation."""
+"""Interactive selectors with keyboard navigation."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from prompt_toolkit.formatted_text import FormattedText
 
 from ..utils import (
     Project,
-    LargeFile,
     CacheLocation,
     XcodeItem,
     XcodeItemType,
+    SelectableItem,
     format_days_ago,
     format_size,
     open_path,
@@ -282,9 +282,9 @@ def select_projects_interactive(
     return selector.run()
 
 
-class LargeFileSelector:
+class DeletionItemSelector:
     """
-    Interactive large file selector with keyboard navigation.
+    Interactive deletion item selector with keyboard navigation.
 
     Controls:
         - Up/Down or j/k: Navigate
@@ -297,7 +297,7 @@ class LargeFileSelector:
 
     def __init__(
         self,
-        files: list[LargeFile],
+        files: list[SelectableItem],
         title: str = "Select files to delete",
     ) -> None:
         self.files = files
@@ -420,7 +420,7 @@ class LargeFileSelector:
 
         return FormattedText(lines)
 
-    def run(self) -> list[LargeFile]:
+    def run(self) -> list[SelectableItem]:
         """
         Run the interactive selector.
 
@@ -526,9 +526,9 @@ class LargeFileSelector:
 
 
 def select_files_interactive(
-    files: list[LargeFile],
+    files: list[SelectableItem],
     title: str = "Select files to delete",
-) -> list[LargeFile]:
+) -> list[SelectableItem]:
     """
     Display interactive file selector and return selected files.
 
@@ -542,7 +542,7 @@ def select_files_interactive(
     if not files:
         return []
 
-    selector = LargeFileSelector(files, title)
+    selector = DeletionItemSelector(files, title)
     return selector.run()
 
 

@@ -12,8 +12,11 @@ from yeet.scanners import (
     LargeFileScanner,
     CacheScanner,
     DiskExplorer,
+    PurgeScanner,
+    InstallerScanner,
+    LeftoverScanner,
 )
-from yeet.utils import ProjectType
+from yeet.utils import CacheCategory, CacheScanResults, ProjectType
 
 
 class TestProjectScanner:
@@ -168,21 +171,29 @@ class TestCacheScanner:
         scanner = CacheScanner()
         results = scanner.scan()
 
-        # Should return CacheScanResults
-        assert hasattr(results, "caches")
-        assert hasattr(results, "total_size")
+        assert isinstance(results, CacheScanResults)
+        assert isinstance(results.caches, list)
+        assert isinstance(results.total_size, int)
 
-    def test_progress_callback(self):
+    def test_progress_callback(self, tmp_path):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "data.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+
         callback_calls = []
 
         def progress_cb(count, name):
             callback_calls.append((count, name))
 
         scanner = CacheScanner()
+        scanner.os_type = "testos"
+        scanner.CACHE_DEFINITIONS = [
+            ("Temp Cache", CacheCategory.SYSTEM, {"testos": [str(cache_dir)]})
+        ]
+
         scanner.scan(progress_callback=progress_cb)
 
-        # Callback should be called at least once
-        assert len(callback_calls) >= 0  # May be 0 if no caches found
+        assert callback_calls == [(1, "Temp Cache")]
 
 
 class TestDiskExplorer:
@@ -292,3 +303,85 @@ class TestDiskExplorer:
                 assert loaded > 0
                 # The cached size should be available
                 assert explorer2.get_cached_size(test_path) == size
+
+
+class TestPurgeScanner:
+    """Tests for PurgeScanner class."""
+
+    def test_detects_project_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir) / "myapp"
+            project_dir.mkdir()
+            (project_dir / "package.json").write_text('{"name": "test"}')
+
+            artifact_dir = project_dir / "node_modules"
+            artifact_dir.mkdir()
+            (artifact_dir / "pkg.txt").write_text("x" * 5000)
+
+            scanner = PurgeScanner()
+            results = scanner.scan(Path(tmpdir))
+
+            assert len(results.artifacts) == 1
+            assert results.artifacts[0].project_name == "myapp"
+            assert results.artifacts[0].name == "node_modules"
+            assert results.artifacts[0].size > 0
+
+
+class TestInstallerScanner:
+    """Tests for InstallerScanner class."""
+
+    def test_detects_dmg_installer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloads = Path(tmpdir) / "Downloads"
+            downloads.mkdir()
+            installer = downloads / "AppInstaller.dmg"
+            installer.write_bytes(b"x" * (1024 * 1024 + 1))
+
+            scanner = InstallerScanner()
+            results = scanner.scan(downloads, min_size_mb=1)
+
+            assert len(results.items) == 1
+            assert results.items[0].name == "AppInstaller.dmg"
+            assert results.items[0].source == "Custom"
+
+
+class TestLeftoverScanner:
+    """Tests for LeftoverScanner class."""
+
+    def test_detects_uninstalled_app_leftover(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            support = home / "Library" / "Application Support"
+            support.mkdir(parents=True)
+
+            leftover = support / "Notion"
+            leftover.mkdir()
+            (leftover / "data.bin").write_bytes(b"x" * 2048)
+
+            scanner = LeftoverScanner()
+            scanner.installed_apps = set()
+            scanner.ROOTS = [("Application Support", support)]
+
+            results = scanner.scan()
+
+            assert len(results.items) == 1
+            assert results.items[0].name == "Notion"
+            assert results.items[0].source == "Application Support"
+
+    def test_skips_installed_app_leftover(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            support = home / "Library" / "Application Support"
+            support.mkdir(parents=True)
+
+            leftover = support / "Slack"
+            leftover.mkdir()
+            (leftover / "data.bin").write_bytes(b"x" * 2048)
+
+            scanner = LeftoverScanner()
+            scanner.installed_apps = {"slack"}
+            scanner.ROOTS = [("Application Support", support)]
+
+            results = scanner.scan()
+
+            assert len(results.items) == 0

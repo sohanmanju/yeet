@@ -81,37 +81,24 @@ class XcodeScanner:
 
         return results
 
-    def _get_directory_size(self, path: Path) -> int:
-        """Get total size of a directory."""
+    def _get_directory_stats(self, path: Path) -> tuple[int, datetime]:
+        """Get total size and most recent modification time in one traversal."""
         total = 0
-        try:
-            for root, _, files in os.walk(path):
-                for fname in files:
-                    try:
-                        fpath = Path(root) / fname
-                        total += fpath.stat().st_size
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-        return total
-
-    def _get_directory_mtime(self, path: Path) -> datetime:
-        """Get most recent modification time in a directory."""
         try:
             latest = path.stat().st_mtime
             for root, _, files in os.walk(path):
                 for fname in files:
                     try:
                         fpath = Path(root) / fname
-                        mtime = fpath.stat().st_mtime
-                        if mtime > latest:
-                            latest = mtime
+                        fstat = fpath.stat()
+                        total += fstat.st_size
+                        if fstat.st_mtime > latest:
+                            latest = fstat.st_mtime
                     except (OSError, PermissionError):
                         continue
-            return datetime.fromtimestamp(latest)
+            return total, datetime.fromtimestamp(latest)
         except (OSError, PermissionError):
-            return datetime.now()
+            return 0, datetime.now()
 
     def _scan_device_support(
         self,
@@ -138,8 +125,7 @@ class XcodeScanner:
                     try:
                         version, build = parse_xcode_version(entry.name)
                         path = Path(entry.path)
-                        size = self._get_directory_size(path)
-                        mtime = self._get_directory_mtime(path)
+                        size, mtime = self._get_directory_stats(path)
 
                         # Track for latest detection
                         if version:
@@ -206,8 +192,7 @@ class XcodeScanner:
 
                 try:
                     path = Path(entry.path)
-                    size = self._get_directory_size(path)
-                    mtime = self._get_directory_mtime(path)
+                    size, mtime = self._get_directory_stats(path)
 
                     # Extract project name from folder (format: ProjectName-hash)
                     parts = entry.name.rsplit("-", 1)
@@ -262,8 +247,7 @@ class XcodeScanner:
 
                     try:
                         path = Path(archive_entry.path)
-                        size = self._get_directory_size(path)
-                        mtime = self._get_directory_mtime(path)
+                        size, mtime = self._get_directory_stats(path)
 
                         # Try to parse Info.plist for app details
                         app_info = None
@@ -489,8 +473,7 @@ class XcodeScanner:
             return
 
         try:
-            size = self._get_directory_size(docs_dir)
-            mtime = self._get_directory_mtime(docs_dir)
+            size, mtime = self._get_directory_stats(docs_dir)
 
             # Only add if there's actual content
             if size > 0:
@@ -532,8 +515,7 @@ class XcodeScanner:
 
                 try:
                     path = Path(entry.path)
-                    size = self._get_directory_size(path)
-                    mtime = self._get_directory_mtime(path)
+                    size, mtime = self._get_directory_stats(path)
 
                     # Only add if there's actual content
                     if size > 0:

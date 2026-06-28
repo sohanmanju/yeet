@@ -5,6 +5,22 @@ All notable changes to yeet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-28
+
+### Added
+- Project artifact purge workflow for build outputs and dependency caches
+- Installer cleanup workflow for downloaded installers and app bundles
+- Leftovers cleanup workflow for uninstalled macOS apps
+- Non-interactive workflow execution with `--workflow`
+- JSON output mode with `--json`
+- Cleanup history stored at `~/.config/yeet/history.jsonl`
+
+### Improved
+- Disk explorer bookmarks, path-aware filtering, and richer item info
+- Unified deletion safety checks for protected paths
+- Cleaner workflow dispatch and shared deletion handling
+- More efficient project and Xcode metadata scans
+
 ## [0.2.2] - 2025-01-06
 
 ### Fixed

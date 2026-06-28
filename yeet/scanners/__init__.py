@@ -5,6 +5,9 @@ from .files import LargeFileScanner
 from .cache import CacheScanner
 from .xcode import XcodeScanner
 from .disk import DiskExplorer
+from .purge import PurgeScanner
+from .installer import InstallerScanner
+from .leftovers import LeftoverScanner
 
 __all__ = [
     "ProjectScanner",
@@ -12,4 +15,7 @@ __all__ = [
     "CacheScanner",
     "XcodeScanner",
     "DiskExplorer",
+    "PurgeScanner",
+    "InstallerScanner",
+    "LeftoverScanner",
 ]

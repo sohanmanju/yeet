@@ -1,6 +1,6 @@
 [project]
 name = "yeet"
-version = "0.1.0"
+version = "0.3.0"
 description = "CLI tool to reclaim disk space by finding and deleting stale projects, large files, and system caches"
 readme = "README.md"
 license = { text = "MIT" }

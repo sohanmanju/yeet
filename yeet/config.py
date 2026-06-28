@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # tomllib is Python 3.11+, use tomli as fallback
@@ -43,6 +44,11 @@ class Config:
     # Cache settings
     cache_enabled: bool = True  # Persist size cache to disk
     cache_max_age_hours: int = 24  # Max age of cached sizes
+
+    # Path safety settings
+    protected_paths: list[str] = field(default_factory=list)
+    ignored_paths: list[str] = field(default_factory=list)
+    bookmarks: list[str] = field(default_factory=list)
 
     @staticmethod
     def get_default_path() -> Path:
@@ -119,6 +125,16 @@ class Config:
             if "max_age_hours" in cache:
                 kwargs["cache_max_age_hours"] = cache["max_age_hours"]
 
+        # Paths section
+        if "paths" in data:
+            paths = data["paths"]
+            if "protected_paths" in paths:
+                kwargs["protected_paths"] = list(paths["protected_paths"])
+            if "ignored_paths" in paths:
+                kwargs["ignored_paths"] = list(paths["ignored_paths"])
+            if "bookmarks" in paths:
+                kwargs["bookmarks"] = list(paths["bookmarks"])
+
         return cls(**kwargs)
 
     def save(self, path: Path | None = None) -> bool:
@@ -164,6 +180,16 @@ class Config:
         lines.append("[cache]")
         lines.append(f"enabled = {str(self.cache_enabled).lower()}")
         lines.append(f"max_age_hours = {self.cache_max_age_hours}")
+        lines.append("")
+
+        # Paths section
+        lines.append("[paths]")
+        protected = ", ".join(json.dumps(path) for path in self.protected_paths)
+        ignored = ", ".join(json.dumps(path) for path in self.ignored_paths)
+        lines.append(f"protected_paths = [{protected}]")
+        lines.append(f"ignored_paths = [{ignored}]")
+        bookmarks = ", ".join(json.dumps(path) for path in self.bookmarks)
+        lines.append(f"bookmarks = [{bookmarks}]")
         lines.append("")
 
         content = "\n".join(lines)

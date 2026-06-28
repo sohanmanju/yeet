@@ -69,7 +69,11 @@ class DiskExplorer:
     # Maximum number of entries in size cache (LRU eviction)
     MAX_CACHE_SIZE = 10000
 
-    def __init__(self, min_size_bytes: int = DEFAULT_MIN_SIZE) -> None:
+    def __init__(
+        self,
+        min_size_bytes: int = DEFAULT_MIN_SIZE,
+        ignored_paths: list[Path] | None = None,
+    ) -> None:
         """
         Initialize the disk explorer.
 
@@ -77,6 +81,7 @@ class DiskExplorer:
             min_size_bytes: Minimum size in bytes to show items (default 5 MB)
         """
         self.min_size_bytes = min_size_bytes
+        self.ignored_paths = [path.expanduser().resolve() for path in ignored_paths or []]
         # Use OrderedDict for LRU cache behavior
         self._size_cache: OrderedDict[str, int] = OrderedDict()
         self._active_processes: list[subprocess.Popen] = []
@@ -102,10 +107,16 @@ class DiskExplorer:
         """
         items: list[DiskItem] = []
 
+        if self._is_ignored(path):
+            return items
+
         try:
             with os.scandir(path) as entries:
                 for entry in entries:
                     try:
+                        if self._is_ignored(Path(entry.path)):
+                            continue
+
                         # Skip hidden system paths
                         if self.is_hidden_system(Path(entry.path)):
                             continue
@@ -172,6 +183,14 @@ class DiskExplorer:
         )
 
         return items
+
+    def _is_ignored(self, path: Path) -> bool:
+        """Check if a path should be skipped by the explorer."""
+        normalized = path.expanduser().resolve()
+        for candidate in self.ignored_paths:
+            if normalized == candidate or candidate in normalized.parents:
+                return True
+        return False
 
     def calculate_size(self, path: Path) -> int:
         """

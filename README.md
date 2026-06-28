@@ -1,20 +1,29 @@
 # yeet
 
-A fast, interactive CLI tool to reclaim disk space by finding and deleting stale projects, large files, system caches, and more.
+A fast CLI for reclaiming disk space by finding stale projects, large files, caches, installer leftovers, and other removable data.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
 ## Features
 
-### Disk Explorer (New in v0.2.0)
-Browse your filesystem interactively, sorted by size - a visual disk usage analyzer in your terminal.
+### Disk Explorer
+Browse your filesystem interactively, sorted by size. A visual disk usage analyzer for the terminal.
 
 - **Navigate directories** with vim-style keybindings
 - **Filter by name or age** to find specific items
 - **Multi-select across directories** before batch deletion
 - **File type breakdown** to see what's using space
+- **Persisted bookmarks** for quick return to frequently used paths
+- **Path-aware filtering** that matches item names and full paths
+- **Metadata-rich info panel** for item details without extra traversal
 - **Move to trash** by default (recoverable) or permanent delete
+
+### History
+Review past cleanup runs from `~/.config/yeet/history.jsonl`.
+
+- Tracks workflow, selection counts, deletions, reclaimed space, and dry-run status
+- Shows recent runs in a compact terminal table
 
 ### Stale Projects Scanner
 Find coding projects you haven't touched in months.
@@ -49,6 +58,43 @@ Reclaim tens of gigabytes from Xcode's caches.
 - Archives
 - Documentation Cache
 - Smart detection of "latest" versions to keep
+
+### Project Artifact Purge
+Clean build outputs and dependency caches from coding projects.
+
+- Finds `node_modules`, `dist`, `build`, `target`, `.next`, `.venv`, `.gradle`, `.build`, `Pods`, and `DerivedData`
+- Groups artifacts by project for safer cleanup
+- Works in interactive and JSON modes
+
+### JSON and Workflow Mode
+Run workflows directly from the CLI for scripting and automation.
+
+- `--workflow` selects a single workflow without the interactive menu
+- `--json` emits scan results as JSON and exits
+- `--dry-run` previews deletions without modifying anything
+- `--history` shows the cleanup history view and exits
+
+### Installer Cleanup
+Find and remove downloaded installer files.
+
+- Scans common download locations like Downloads, Desktop, Homebrew cache, and Mail Downloads
+- Detects `.dmg`, `.pkg`, `.zip`, `.tar.gz`, `.iso`, and app bundles
+- Works in interactive and JSON modes
+
+### App Leftovers
+Clean leftover data from uninstalled macOS apps.
+
+- Scans `Application Support`, `Caches`, `Preferences`, `Logs`, `WebKit`, `Containers`, and `LaunchAgents`
+- Uses installed app detection to avoid obvious false positives
+- Works in interactive and JSON modes
+
+### Safety
+
+- Moves deletions to trash by default when available
+- Requires confirmation before destructive actions
+- Protects system paths and user-configured protected paths
+- Supports user-defined ignored paths for explorer scans
+- Records cleanup history automatically
 
 ## Installation
 
@@ -87,6 +133,20 @@ yeet --min-cache-size 10    # Caches larger than 10MB (default: 1)
 # Export scan results to JSON (for scripting)
 yeet ~/Library --export results.json
 yeet ~/Downloads --export -   # Output to stdout
+
+# Run a specific workflow non-interactively
+yeet --workflow caches --json
+yeet --workflow purge --json ~/Projects
+yeet --workflow installer --json ~/Downloads
+yeet --workflow leftovers --json
+yeet --workflow files --json ~/Downloads
+yeet --workflow history
+
+# Preview deletions without changing anything
+yeet --dry-run
+
+# Review past cleanup runs
+yeet --history
 ```
 
 ## Keyboard Shortcuts
@@ -114,6 +174,8 @@ yeet ~/Downloads --export -   # Output to stdout
 | `s` | Cycle sort mode |
 | `t` | Toggle small items |
 | `o` | Open in Finder/file manager |
+| `b` | Jump to next bookmark |
+| `B` | Bookmark current directory |
 | `?` | Show help |
 | `q` / `Esc` | Quit |
 
@@ -151,6 +213,11 @@ cache_size_mb = 1       # Minimum cache size to show
 [cache]
 enabled = true          # Persist size cache to disk
 max_age_hours = 24      # Max age of cached sizes
+
+[paths]
+protected_paths = []     # Extra paths that cannot be deleted
+ignored_paths = []       # Extra paths skipped during disk explorer scans
+bookmarks = []           # Saved disk explorer bookmarks
 ```
 
 ## Safety
@@ -185,6 +252,8 @@ Yeet gracefully skips paths it can't access - no errors, it just won't show them
 - **Prioritized loading** - visible items load first
 - **Persistent cache** - sizes cached for faster subsequent scans
 - **Bounded memory** - LRU cache prevents unbounded growth
+- **Single-pass metadata scans** for project and Xcode workflows where practical
+- **Streaming history reads** for large history files
 
 ## How It Works
 

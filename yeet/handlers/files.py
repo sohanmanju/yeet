@@ -11,19 +11,21 @@ from rich.panel import Panel
 from ..config import get_config
 from ..scanner import LargeFileScanner
 from ..utils import (
-    LargeFile,
     LargeFileScanResults,
+    SelectableItem,
     format_size,
     trash_available,
 )
 from ..ui.prompts import get_directory_prompt
 from ..ui.selector import select_files_interactive
+from ..json_output import large_file_scan_payload, dump_json
 
 from .common import (
     delete_item,
     get_progress_context,
     get_deletion_progress_context,
     check_trash_availability,
+    record_history,
 )
 
 
@@ -55,11 +57,13 @@ def run_large_file_scan(
 
 def perform_file_deletions(
     console: Console,
-    files: list[LargeFile],
+    files: list[SelectableItem],
     use_trash: bool = False,
-) -> list[tuple[LargeFile, bool, str]]:
+    dry_run: bool = False,
+    config=None,
+) -> list[tuple[SelectableItem, bool, str]]:
     """Delete selected files with progress."""
-    results: list[tuple[LargeFile, bool, str]] = []
+    results: list[tuple[SelectableItem, bool, str]] = []
 
     action_word = "Moving to trash" if use_trash and trash_available() else "Deleting"
 
@@ -68,7 +72,12 @@ def perform_file_deletions(
 
         for file in files:
             progress.update(task, description=f"{action_word}: {file.name}")
-            success, msg = delete_item(file.path, use_trash)
+            success, msg = delete_item(
+                file.path,
+                use_trash,
+                dry_run=dry_run,
+                config=config,
+            )
             results.append((file, success, msg))
             progress.advance(task)
 
@@ -95,8 +104,9 @@ def display_large_file_summary(
 
 def display_file_deletion_results(
     console: Console,
-    deleted_files: list[tuple[LargeFile, bool, str]],
+    deleted_files: list[tuple[SelectableItem, bool, str]],
     use_trash: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Display results of file deletion operation."""
     console.print()
@@ -106,17 +116,20 @@ def display_file_deletion_results(
 
     total_reclaimed = sum(f.size for f, success, _ in deleted_files if success)
 
-    action_noun = "moved to trash" if use_trash else "deleted"
-    title_action = "Moved to Trash" if use_trash else "Deletion"
+    action_noun = (
+        "would be moved to trash" if use_trash else "would be deleted"
+    ) if dry_run else ("moved to trash" if use_trash else "deleted")
+    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+    size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
 
     result_text = (
         f"[bold]{title_action} Complete[/]\n\n"
         f"  Files {action_noun}: [green]{files_success}[/]"
         f"{f' ([red]{files_failed} failed[/])' if files_failed else ''}\n\n"
-        f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]"
+        f"  [bold green]{size_label}: {format_size(total_reclaimed)}[/]"
     )
 
-    if use_trash and files_success > 0:
+    if use_trash and files_success > 0 and not dry_run:
         result_text += (
             "\n\n[dim]Items moved to trash. You can restore them from "
             "your system trash if needed.[/]"
@@ -143,7 +156,7 @@ def display_file_deletion_results(
 
 
 def confirm_file_deletion(
-    console: Console, files: list[LargeFile], use_trash: bool = False
+    console: Console, files: list[SelectableItem], use_trash: bool = False
 ) -> bool:
     """Show summary and confirm file deletion."""
     from rich.prompt import Confirm
@@ -182,10 +195,25 @@ def handle_large_files(console: Console, args: argparse.Namespace) -> None:
     """Handle the large files workflow."""
     # Get config for trash setting
     config = get_config()
-    use_trash = check_trash_availability(console, config.use_trash)
+    dry_run = getattr(args, "dry_run", False)
+    json_mode = getattr(args, "json", False)
+    use_trash = (
+        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+    )
 
     # Get directory
-    if args.directory:
+    if json_mode:
+        if args.directory:
+            from ..utils import validate_directory
+
+            is_valid, result = validate_directory(args.directory)
+            if not is_valid:
+                console.print(f"[red]Error:[/] {result}")
+                return
+            root = result
+        else:
+            root = Path(config.start_path).expanduser()
+    elif args.directory:
         from ..utils import validate_directory
 
         is_valid, result = validate_directory(args.directory)
@@ -198,14 +226,27 @@ def handle_large_files(console: Console, args: argparse.Namespace) -> None:
         root = get_directory_prompt(console)
 
     # Run scan
-    console.print()
-    results = run_large_file_scan(console, root, min_size_mb=args.min_size)
+    scan_console = Console(stderr=True) if json_mode else console
+    if not json_mode:
+        console.print()
+    results = run_large_file_scan(scan_console, root, min_size_mb=args.min_size)
+
+    if json_mode:
+        dump_json(large_file_scan_payload(results))
+        return
 
     # Display summary
     display_large_file_summary(console, results, args.min_size)
 
     if not results.files:
         console.print(f"\n[dim]No files larger than {args.min_size}MB found.[/]")
+        record_history(
+            "files",
+            dry_run=dry_run,
+            status="empty",
+            scanned_count=results.total_files_scanned,
+            extra={"found_count": 0},
+        )
         return
 
     # Interactive selection
@@ -217,12 +258,47 @@ def handle_large_files(console: Console, args: argparse.Namespace) -> None:
     if files_to_delete:
         if confirm_file_deletion(console, files_to_delete, use_trash=use_trash):
             deletion_results = perform_file_deletions(
-                console, files_to_delete, use_trash=use_trash
+                console,
+                files_to_delete,
+                use_trash=use_trash,
+                dry_run=dry_run,
+                config=config,
             )
             display_file_deletion_results(
-                console, deletion_results, use_trash=use_trash
+                console,
+                deletion_results,
+                use_trash=use_trash,
+                dry_run=dry_run,
+            )
+            reclaimed = sum(
+                f.size for f, success, _ in deletion_results if success and not dry_run
+            )
+            record_history(
+                "files",
+                dry_run=dry_run,
+                status="completed",
+                selected_count=len(files_to_delete),
+                deleted_count=sum(1 for _, success, _ in deletion_results if success),
+                reclaimed_bytes=reclaimed,
+                scanned_count=results.total_files_scanned,
+                extra={"found_count": len(results.files)},
             )
         else:
             console.print("\n[yellow]Deletion cancelled.[/]")
+            record_history(
+                "files",
+                dry_run=dry_run,
+                status="cancelled",
+                selected_count=len(files_to_delete),
+                scanned_count=results.total_files_scanned,
+                extra={"found_count": len(results.files)},
+            )
     else:
         console.print("\n[dim]No files selected for deletion.[/]")
+        record_history(
+            "files",
+            dry_run=dry_run,
+            status="no-selection",
+            scanned_count=results.total_files_scanned,
+            extra={"found_count": len(results.files)},
+        )

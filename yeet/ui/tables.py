@@ -127,6 +127,7 @@ def display_deletion_results(
     console: Console,
     deleted_projects: list[tuple[Project, bool, str]],
     use_trash: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Display results of deletion operation."""
     console.print()
@@ -136,17 +137,24 @@ def display_deletion_results(
 
     total_reclaimed = sum(p.total_size for p, success, _ in deleted_projects if success)
 
-    action_noun = "moved to trash" if use_trash else "deleted"
-    title_action = "Moved to Trash" if use_trash else "Deletion"
+    action_noun = (
+        "would be moved to trash" if use_trash else "would be deleted"
+    ) if dry_run else ("moved to trash" if use_trash else "deleted")
+    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+    size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
+    item_label = "would be moved to trash" if dry_run and use_trash else (
+        "would be deleted" if dry_run else ("moved to trash" if use_trash else "deleted")
+    )
+    items_label = "would be deleted" if dry_run else "deleted"
 
     result_text = (
         f"[bold]{title_action} Complete[/]\n\n"
-        f"  Projects {action_noun}: [green]{projects_success}[/]"
+        f"  Projects {item_label}: [green]{projects_success}[/]"
         f"{f' ([red]{projects_failed} failed[/])' if projects_failed else ''}\n\n"
-        f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]"
+        f"  [bold green]{size_label}: {format_size(total_reclaimed)}[/]"
     )
 
-    if use_trash and projects_success > 0:
+    if use_trash and projects_success > 0 and not dry_run:
         result_text += (
             "\n\n[dim]Items moved to trash. You can restore them from "
             "your system trash if needed.[/]"
@@ -211,6 +219,7 @@ def display_cache_deletion_results(
     console: Console,
     deleted_caches: list[tuple[CacheLocation, bool, str]],
     use_trash: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Display results of cache deletion operation."""
     console.print()
@@ -220,17 +229,23 @@ def display_cache_deletion_results(
 
     total_reclaimed = sum(c.size for c, success, _ in deleted_caches if success)
 
-    action_noun = "moved to trash" if use_trash else "cleared"
-    title_action = "Moved to Trash" if use_trash else "Cache Cleanup"
+    action_noun = (
+        "would be moved to trash" if use_trash else "would be cleared"
+    ) if dry_run else ("moved to trash" if use_trash else "cleared")
+    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Cache Cleanup")
+    size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
+    item_label = "would be moved to trash" if dry_run and use_trash else (
+        "would be cleared" if dry_run else ("moved to trash" if use_trash else "cleared")
+    )
 
     result_text = (
         f"[bold]{title_action} Complete[/]\n\n"
-        f"  Caches {action_noun}: [green]{caches_success}[/]"
+        f"  Caches {item_label}: [green]{caches_success}[/]"
         f"{f' ([red]{caches_failed} failed[/])' if caches_failed else ''}\n\n"
-        f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]"
+        f"  [bold green]{size_label}: {format_size(total_reclaimed)}[/]"
     )
 
-    if use_trash and caches_success > 0:
+    if use_trash and caches_success > 0 and not dry_run:
         result_text += (
             "\n\n[dim]Items moved to trash. You can restore them from "
             "your system trash if needed.[/]"
@@ -297,6 +312,7 @@ def display_xcode_scan_summary(console: Console, results: XcodeScanResults) -> N
 def display_xcode_deletion_results(
     console: Console,
     deleted_items: list[tuple[XcodeItem, bool, str]],
+    dry_run: bool = False,
 ) -> None:
     """Display results of Xcode cleanup operation."""
     console.print()
@@ -308,10 +324,10 @@ def display_xcode_deletion_results(
 
     console.print(
         Panel(
-            f"[bold]Xcode Cleanup Complete[/]\n\n"
-            f"  Items deleted: [green]{items_success}[/]"
+            f"[bold]{'Dry Run' if dry_run else 'Xcode Cleanup'} Complete[/]\n\n"
+            f"  Items {items_label}: [green]{items_success}[/]"
             f"{f' ([red]{items_failed} failed[/])' if items_failed else ''}\n\n"
-            f"  [bold green]Space reclaimed: {format_size(total_reclaimed)}[/]",
+            f"  [bold green]{'Potential space reclaimed' if dry_run else 'Space reclaimed'}: {format_size(total_reclaimed)}[/]",
             title="Cleanup Summary",
             border_style="cyan",
         )

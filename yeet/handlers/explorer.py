@@ -23,28 +23,54 @@ from ..config import get_config
 from ..scanner import DiskExplorer
 from ..utils import format_size, SIZE_LOADING
 
-from .common import delete_item, get_deletion_progress_context, check_trash_availability
+from .common import (
+    delete_item,
+    get_deletion_progress_context,
+    check_trash_availability,
+    record_history,
+)
 
 
 def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
     """Handle the disk explorer workflow."""
     from ..ui.explorer import DiskExplorerUI
+    from ..utils import validate_directory
 
     # Get config for settings
     config = get_config()
+    dry_run = getattr(args, "dry_run", False)
+    json_mode = getattr(args, "json", False)
     start_path = Path(config.start_path).expanduser()
-    use_trash = check_trash_availability(console, config.use_trash)
-
-    console.print("\n[dim]Starting disk explorer...[/]")
+    use_trash = (
+        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+    )
 
     # Create explorer using config settings
-    explorer = DiskExplorer(min_size_bytes=config.min_size_mb * 1024 * 1024)
+    explorer = DiskExplorer(
+        min_size_bytes=config.min_size_mb * 1024 * 1024,
+        ignored_paths=[Path(path) for path in config.ignored_paths],
+    )
 
     # Load cached sizes for faster startup
     if config.cache_enabled:
         loaded = explorer.load_cache(max_age_hours=config.cache_max_age_hours)
         if loaded > 0:
             console.print(f"[dim]Loaded {loaded} cached sizes[/]")
+
+    if json_mode:
+        if args.directory:
+            is_valid, result = validate_directory(args.directory)
+            if not is_valid:
+                console.print(f"[red]Error:[/] {result}")
+                return
+            root_path = result
+        else:
+            root_path = start_path
+
+        export_disk_scan(root_path, "-")
+        return
+
+    console.print("\n[dim]Starting disk explorer...[/]")
 
     ui = DiskExplorerUI(explorer, start_path=start_path)
 
@@ -57,6 +83,13 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
 
     if not selected_paths:
         console.print("\n[dim]No items selected for deletion.[/]")
+        record_history(
+            "explore",
+            dry_run=dry_run,
+            status="no-selection",
+            selected_count=0,
+            scanned_count=len(explorer._size_cache),
+        )
         return
 
     # Calculate total size
@@ -74,11 +107,26 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
         confirm_text = console.input("\n[bold red]Type 'yes' to confirm: [/]")
         if confirm_text.strip().lower() != "yes":
             console.print("[yellow]Deletion cancelled.[/]")
+            record_history(
+                "explore",
+                dry_run=dry_run,
+                status="cancelled",
+                selected_count=len(selected_paths),
+                scanned_count=len(explorer._size_cache),
+                extra={"found_count": len(selected_paths)},
+            )
             return
 
     # Determine action text based on trash setting
-    action_verb = "move to trash" if use_trash else "delete permanently"
-    action_noun = "Moved to trash" if use_trash else "Deleted"
+    if dry_run:
+        action_verb = (
+            "would move to trash" if use_trash else "would delete permanently"
+        )
+        action_noun = "Would move to trash" if use_trash else "Would delete"
+    else:
+        action_verb = "move to trash" if use_trash else "delete permanently"
+        action_noun = "Moved to trash" if use_trash else "Deleted"
+    size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
 
     # Show confirmation
     console.print(
@@ -93,7 +141,7 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
                 if len(selected_paths) > 10
                 else ""
             )
-            + f"\n\n[bold]Total space to reclaim:[/] [green]{format_size(total_size)}[/]",
+            + f"\n\n[bold]{size_label}:[/] [green]{format_size(total_size)}[/]",
             title="Deletion Summary",
             border_style="red",
         )
@@ -112,6 +160,14 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
         console=console,
     ):
         console.print("[yellow]Deletion cancelled.[/]")
+        record_history(
+            "explore",
+            dry_run=dry_run,
+            status="cancelled",
+            selected_count=len(selected_paths),
+            scanned_count=len(explorer._size_cache),
+            extra={"found_count": len(selected_paths)},
+        )
         return
 
     # Perform deletions
@@ -119,7 +175,10 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
     failed_count = 0
     reclaimed_size = 0
 
-    action_word = "Moving to trash" if use_trash else "Deleting"
+    if dry_run:
+        action_word = "Would move to trash" if use_trash else "Would delete"
+    else:
+        action_word = "Moving to trash" if use_trash else "Deleting"
 
     with get_deletion_progress_context(console) as progress:
         task = progress.add_task(f"{action_word}...", total=len(selected_paths))
@@ -128,7 +187,7 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
             progress.update(task, description=f"{action_word}: {path.name}")
             size = explorer.get_cached_size(path) or 0
 
-            success, msg = delete_item(path, use_trash)
+            success, msg = delete_item(path, use_trash, dry_run=dry_run, config=config)
 
             if success:
                 deleted_count += 1
@@ -148,10 +207,10 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
         f"[bold]{result_action} Complete[/]\n\n"
         f"  Items {result_action.lower()}: [green]{deleted_count}[/]"
         f"{f' ([red]{failed_count} failed[/])' if failed_count else ''}\n\n"
-        f"  [bold green]Space reclaimed: {format_size(reclaimed_size)}[/]"
+        f"  [bold green]{size_label}: {format_size(reclaimed_size)}[/]"
     )
 
-    if use_trash and deleted_count > 0:
+    if use_trash and deleted_count > 0 and not dry_run:
         result_text += (
             "\n\n[dim]Items moved to trash. You can restore them from "
             "your system trash if needed.[/]"
@@ -163,6 +222,17 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
             title=result_title,
             border_style="green",
         )
+    )
+
+    record_history(
+        "explore",
+        dry_run=dry_run,
+        status="completed",
+        selected_count=len(selected_paths),
+        deleted_count=deleted_count,
+        reclaimed_bytes=reclaimed_size,
+        scanned_count=len(explorer._size_cache),
+        extra={"found_count": len(selected_paths)},
     )
 
 

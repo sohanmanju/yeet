@@ -11,6 +11,9 @@ from .scanners import (
     CacheScanner,
     XcodeScanner,
     DiskExplorer,
+    PurgeScanner,
+    InstallerScanner,
+    LeftoverScanner,
 )
 
 __all__ = [
@@ -19,4 +22,7 @@ __all__ = [
     "CacheScanner",
     "XcodeScanner",
     "DiskExplorer",
+    "PurgeScanner",
+    "InstallerScanner",
+    "LeftoverScanner",
 ]

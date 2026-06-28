@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from fnmatch import fnmatch
+from typing import Protocol
 
 
 # Time thresholds
@@ -211,6 +213,17 @@ class LargeFile:
         return self.path.suffix.lower() or "—"
 
 
+class SelectableItem(Protocol):
+    """Item shape used by deletion selectors and cleanup summaries."""
+
+    path: Path
+    name: str
+    size: int
+    size_formatted: str
+    days_since_modified: int
+    extension: str
+
+
 @dataclass
 class ScanResults:
     """Container for project scan results."""
@@ -258,6 +271,140 @@ class LargeFileScanResults:
     def by_size(self) -> list[LargeFile]:
         """Get files sorted by size (largest first)."""
         return sorted(self.files, key=lambda f: f.size, reverse=True)
+
+
+@dataclass(slots=True)
+class PurgeArtifact:
+    """Represents a project artifact directory found during purge scan."""
+
+    path: Path
+    name: str
+    project_root: Path
+    project_name: str
+    artifact_type: str
+    size: int
+    last_modified: datetime
+
+    @property
+    def size_formatted(self) -> str:
+        return format_size(self.size)
+
+    @property
+    def days_since_modified(self) -> int:
+        return (datetime.now() - self.last_modified).days
+
+    @property
+    def extension(self) -> str:
+        return self.artifact_type
+
+
+@dataclass
+class PurgeScanResults:
+    """Container for project artifact purge results."""
+
+    artifacts: list[PurgeArtifact] = field(default_factory=list)
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_size(self) -> int:
+        return sum(artifact.size for artifact in self.artifacts)
+
+    @property
+    def by_project(self) -> dict[Path, list[PurgeArtifact]]:
+        result: dict[Path, list[PurgeArtifact]] = {}
+        for artifact in self.artifacts:
+            result.setdefault(artifact.project_root, []).append(artifact)
+        return result
+
+    @property
+    def by_size(self) -> list[PurgeArtifact]:
+        return sorted(self.artifacts, key=lambda a: a.size, reverse=True)
+
+
+@dataclass(slots=True)
+class InstallerItem:
+    """Represents a downloaded installer file or bundle."""
+
+    path: Path
+    name: str
+    source: str
+    size: int
+    last_modified: datetime
+    extension: str
+
+    @property
+    def size_formatted(self) -> str:
+        return format_size(self.size)
+
+    @property
+    def days_since_modified(self) -> int:
+        return (datetime.now() - self.last_modified).days
+
+
+@dataclass
+class InstallerScanResults:
+    """Container for installer cleanup results."""
+
+    items: list[InstallerItem] = field(default_factory=list)
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_size(self) -> int:
+        return sum(item.size for item in self.items)
+
+    @property
+    def by_source(self) -> dict[str, list[InstallerItem]]:
+        result: dict[str, list[InstallerItem]] = {}
+        for item in self.items:
+            result.setdefault(item.source, []).append(item)
+        return result
+
+    @property
+    def by_size(self) -> list[InstallerItem]:
+        return sorted(self.items, key=lambda item: item.size, reverse=True)
+
+
+@dataclass(slots=True)
+class LeftoverItem:
+    """Represents leftover app data from an uninstalled app."""
+
+    path: Path
+    name: str
+    source: str
+    size: int
+    last_modified: datetime
+    app_hint: str
+
+    @property
+    def size_formatted(self) -> str:
+        return format_size(self.size)
+
+    @property
+    def days_since_modified(self) -> int:
+        return (datetime.now() - self.last_modified).days
+
+
+@dataclass
+class LeftoverScanResults:
+    """Container for leftovers scan results."""
+
+    items: list[LeftoverItem] = field(default_factory=list)
+    scan_errors: list[str] = field(default_factory=list)
+
+    @property
+    def total_size(self) -> int:
+        return sum(item.size for item in self.items)
+
+    @property
+    def by_source(self) -> dict[str, list[LeftoverItem]]:
+        result: dict[str, list[LeftoverItem]] = {}
+        for item in self.items:
+            result.setdefault(item.source, []).append(item)
+        return result
+
+    @property
+    def by_size(self) -> list[LeftoverItem]:
+        return sorted(self.items, key=lambda item: item.size, reverse=True)
 
 
 class CacheCategory(Enum):

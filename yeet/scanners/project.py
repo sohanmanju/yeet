@@ -196,11 +196,7 @@ class ProjectScanner:
             if is_git:
                 last_commit = self._get_last_commit_date(path)
 
-            # Calculate size (excluding heavy directories)
-            total_size = self._get_project_size(path)
-
-            # Get last modified and accessed times of files in project
-            last_modified, last_accessed = self._get_last_activity_times(path)
+            total_size, last_modified, last_accessed = self._get_project_stats(path)
 
             return Project(
                 path=path,
@@ -215,61 +211,40 @@ class ProjectScanner:
         except Exception:
             return None
 
-    def _get_project_size(self, path: Path) -> int:
-        """Calculate project size, excluding heavy directories like node_modules."""
+    def _get_project_stats(self, path: Path) -> tuple[int, datetime, datetime]:
+        """Calculate project size and latest access times in one traversal."""
         total = 0
-        try:
-            with os.scandir(path) as entries:
-                for entry in entries:
-                    try:
-                        name = entry.name
-                        if entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size
-                        elif entry.is_dir(follow_symlinks=False):
-                            # Skip heavy directories
-                            if name not in SKIP_FOR_SIZE and not name.startswith("."):
-                                total += self._get_project_size(Path(entry.path))
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-        return total
-
-    def _get_last_activity_times(self, path: Path) -> tuple[datetime, datetime]:
-        """
-        Get the most recent modification and access times of any file in the project.
-
-        Returns:
-            Tuple of (last_modified, last_accessed) as datetime objects
-        """
         stat = path.stat()
         latest_mtime = stat.st_mtime
         latest_atime = stat.st_atime
 
         try:
-            for root, dirs, files in os.walk(path):
-                # Skip heavy directories
-                dirs[:] = [
-                    d for d in dirs if d not in SKIP_FOR_SIZE and not d.startswith(".")
-                ]
-
-                for fname in files:
-                    try:
-                        fpath = Path(root) / fname
-                        fstat = fpath.stat()
-
-                        if fstat.st_mtime > latest_mtime:
-                            latest_mtime = fstat.st_mtime
-
-                        if fstat.st_atime > latest_atime:
-                            latest_atime = fstat.st_atime
-                    except (OSError, PermissionError):
-                        continue
+            stack = [path]
+            while stack:
+                current = stack.pop()
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                fstat = entry.stat(follow_symlinks=False)
+                                total += fstat.st_size
+                                if fstat.st_mtime > latest_mtime:
+                                    latest_mtime = fstat.st_mtime
+                                if fstat.st_atime > latest_atime:
+                                    latest_atime = fstat.st_atime
+                            elif entry.is_dir(follow_symlinks=False):
+                                name = entry.name
+                                if name not in SKIP_FOR_SIZE and not name.startswith("."):
+                                    stack.append(Path(entry.path))
+                        except (OSError, PermissionError):
+                            continue
         except (OSError, PermissionError):
             pass
 
-        return datetime.fromtimestamp(latest_mtime), datetime.fromtimestamp(
-            latest_atime
+        return (
+            total,
+            datetime.fromtimestamp(latest_mtime),
+            datetime.fromtimestamp(latest_atime),
         )
 
     def _get_last_commit_date(self, project_path: Path) -> datetime | None:

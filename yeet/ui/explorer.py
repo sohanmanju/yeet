@@ -11,8 +11,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import FormattedText
-from shutil import get_terminal_size
 
+from ..config import get_config
 from ..scanner import DiskExplorer
 from ..utils import (
     DiskItem,
@@ -21,6 +21,7 @@ from ..utils import (
     format_days_ago,
     open_path,
 )
+from . import explorer_render
 
 
 class DiskExplorerUI:
@@ -35,6 +36,7 @@ class DiskExplorerUI:
     - Info panel for detailed item information
     - Filter by name or age
     - File type breakdown
+    - Bookmarks for quick navigation
 
     Controls:
         - Up/Down or j/k: Navigate
@@ -55,6 +57,8 @@ class DiskExplorerUI:
         - ~: Jump to home directory
         - /: Jump to root
         - r: Refresh current directory
+        - b: Jump to next bookmark
+        - B: Bookmark current directory
         - ?: Show help
         - q: Quit
     """
@@ -72,6 +76,7 @@ class DiskExplorerUI:
             start_path: Starting directory path
         """
         self.explorer = explorer
+        self._config = get_config()
         self.current_path = start_path
         self.history: deque[Path] = deque(maxlen=100)  # Bounded history
         self.items: list[DiskItem] = []
@@ -114,6 +119,9 @@ class DiskExplorerUI:
         # Info panel state
         self.show_info_panel: bool = False
 
+        # Bookmarks
+        self.bookmarks: list[Path] = [Path(path).expanduser() for path in self._config.bookmarks]
+
         # Quit warning state
         self._quit_warned: bool = False
 
@@ -153,7 +161,9 @@ class DiskExplorerUI:
         else:
             pattern = self.filter_text.lower()
             self.filtered_items = [
-                item for item in self.items if pattern in item.name.lower()
+                item
+                for item in self.items
+                if pattern in item.name.lower() or pattern in str(item.path).lower()
             ]
         # Re-apply age filter on top if active
         self._apply_age_filter()
@@ -199,6 +209,40 @@ class DiskExplorerUI:
     def _get_display_items(self) -> list[DiskItem]:
         """Get the items to display (filtered by name and/or age, or all)."""
         return self.filtered_items if self.filtered_items is not None else self.items
+
+    def _is_bookmarked(self, path: Path) -> bool:
+        return any(path == bookmark for bookmark in self.bookmarks)
+
+    def _save_bookmarks(self) -> None:
+        self._config.bookmarks = [str(path) for path in self.bookmarks]
+        self._config.save()
+
+    def _bookmark_current_path(self) -> None:
+        if self.current_path not in self.bookmarks:
+            self.bookmarks.append(self.current_path)
+            self._save_bookmarks()
+            self.status_message = f"Bookmarked {self.current_path.name or '/'}"
+        else:
+            self.status_message = "Already bookmarked"
+
+    def _go_to_next_bookmark(self) -> None:
+        if not self.bookmarks:
+            self.status_message = "No bookmarks saved"
+            return
+
+        current = self.current_path.resolve()
+        bookmarks = [bookmark.resolve() for bookmark in self.bookmarks]
+        try:
+            idx = bookmarks.index(current)
+            target = bookmarks[(idx + 1) % len(bookmarks)]
+        except ValueError:
+            target = bookmarks[0]
+
+        if target.is_dir():
+            self.navigate_to(target)
+            self.status_message = f"Opened bookmark: {target.name or '/'}"
+        else:
+            self.status_message = f"Bookmark is not a directory: {target}"
 
     def _start_lazy_loading(self) -> None:
         """Start background thread to calculate directory sizes using parallel scanning."""
@@ -266,532 +310,35 @@ class DiskExplorerUI:
         self._loading_thread.start()
 
     def _get_breadcrumbs(self, max_width: int = 70) -> FormattedText:
-        """Generate breadcrumb navigation for current path."""
-        parts = self.current_path.parts
-        if not parts:
-            return FormattedText([("class:breadcrumb", "/")])
-
-        # Build breadcrumb parts
-        crumbs: list[tuple[str, str]] = []
-        separator = " > "
-
-        # Calculate total length to see if we need to abbreviate
-        full_path = separator.join(parts)
-        if len(full_path) > max_width and len(parts) > 3:
-            # Show first, ellipsis, and last 2 parts
-            crumbs.append(("class:breadcrumb", parts[0] if parts[0] != "/" else "/"))
-            crumbs.append(("class:breadcrumb-sep", separator))
-            crumbs.append(("class:breadcrumb-dim", "..."))
-            crumbs.append(("class:breadcrumb-sep", separator))
-            for i, part in enumerate(parts[-2:]):
-                if i > 0:
-                    crumbs.append(("class:breadcrumb-sep", separator))
-                crumbs.append(("class:breadcrumb", part))
-        else:
-            # Show full path
-            for i, part in enumerate(parts):
-                if i > 0:
-                    crumbs.append(("class:breadcrumb-sep", separator))
-                display = part if part != "/" else "/"
-                if i == len(parts) - 1:
-                    crumbs.append(("class:breadcrumb-current", display))
-                else:
-                    crumbs.append(("class:breadcrumb", display))
-
-        return FormattedText(crumbs)
+        return explorer_render.get_breadcrumbs(self, max_width=max_width)
 
     def _get_parent_total_size(self) -> int | None:
-        """Get the total size of items in the current directory."""
-        # Sum up all known item sizes
-        total = 0
-        for item in self.items:
-            if item.size > 0 and item.size != SIZE_LOADING:
-                total += item.size
-        return total if total > 0 else None
+        return explorer_render.get_parent_total_size(self)
 
     def _get_item_info(self, item: DiskItem) -> FormattedText:
-        """Generate detailed info panel for an item."""
-        lines: list[tuple[str, str]] = []
-
-        # Full path
-        lines.append(("class:info-label", "  Path: "))
-        lines.append(("class:info-value", str(item.path)))
-        lines.append(("", "\n"))
-
-        # Size
-        lines.append(("class:info-label", "  Size: "))
-        lines.append(("class:info-value", item.size_formatted))
-
-        # Percentage of parent
-        parent_size = self._get_parent_total_size()
-        if parent_size and item.size > 0 and item.size != SIZE_LOADING:
-            pct = (item.size / parent_size) * 100
-            lines.append(("class:info-value", f" ({pct:.1f}% of parent)"))
-        lines.append(("", "\n"))
-
-        # Type
-        lines.append(("class:info-label", "  Type: "))
-        lines.append(("class:info-value", "Directory" if item.is_dir else "File"))
-        lines.append(("", "\n"))
-
-        # Item count for directories
-        if item.is_dir:
-            try:
-                count = len(list(item.path.iterdir()))
-                lines.append(("class:info-label", "  Items: "))
-                lines.append(("class:info-value", str(count)))
-                lines.append(("", "\n"))
-            except (PermissionError, OSError):
-                pass
-
-        # Modified date
-        lines.append(("class:info-label", "  Modified: "))
-        try:
-            lines.append(
-                ("class:info-value", item.modified.strftime("%Y-%m-%d %H:%M:%S"))
-            )
-            lines.append(
-                ("class:info-dim", f" ({format_days_ago(item.days_since_modified)})")
-            )
-        except (OSError, ValueError, AttributeError):
-            lines.append(("class:info-value", "Unknown"))
-        lines.append(("", "\n"))
-
-        return FormattedText(lines)
+        return explorer_render.get_item_info(self, item)
 
     def _get_header(self) -> FormattedText:
-        """Generate the table header row."""
-        w = self.col_widths
-        header = (
-            f"{'':>{w['select']}} "
-            f"{'':>{w['icon']}}"
-            f"{'Name':<{w['name']}} "
-            f"{'Size':>{w['size']}} "
-            f"{'Modified':>{w['modified']}}"
-        )
-        return FormattedText([("class:header", header)])
+        return explorer_render.get_header(self)
 
     def _get_row(
         self,
         idx: int,
         display_items: list[DiskItem],
     ) -> FormattedText:
-        """Generate a single row for an item."""
-        item = display_items[idx]
-        w = self.col_widths
-
-        is_selected = item.path in self.selected
-        is_cursor = idx == self.cursor
-
-        # Selection indicator
-        select_char = "[x]" if is_selected else "[ ]"
-
-        # Directory indicator
-        icon = "▸ " if item.is_dir else "  "
-
-        # Truncate name if needed
-        name = item.name
-        if len(name) > w["name"] - 2:
-            name = name[: w["name"] - 5] + "..."
-
-        # Size display
-        size_str = item.size_formatted
-
-        # Modified date
-        modified = format_days_ago(item.days_since_modified)
-
-        # Build the row
-        row = (
-            f"{select_char:>{w['select']}} "
-            f"{icon}{name:<{w['name']}} "
-            f"{size_str:>{w['size']}} "
-            f"{modified:>{w['modified']}}"
-        )
-
-        # Style based on state
-        if is_cursor and is_selected:
-            style = "class:cursor-selected"
-        elif is_cursor:
-            style = "class:cursor"
-        elif is_selected:
-            style = "class:selected"
-        elif item.is_loading:
-            style = "class:loading"
-        else:
-            style = "class:normal"
-
-        return FormattedText([(style, row)])
+        return explorer_render.get_row(self, idx, display_items)
 
     def _calculate_extension_stats(self) -> list[tuple[str, int, int]]:
-        """
-        Calculate file type statistics for the current directory.
-
-        Returns:
-            List of tuples: [(extension, count, total_size), ...] sorted by size desc
-        """
-        stats: dict[str, tuple[int, int]] = {}  # extension -> (count, total_size)
-
-        for item in self.items:
-            if item.is_dir:
-                ext = "(directories)"
-            else:
-                # Get extension, lowercase
-                suffix = item.path.suffix.lower()
-                ext = suffix if suffix else "(no extension)"
-
-            # Use cached size, default to 0 if loading
-            size = item.size if item.size > 0 else 0
-
-            if ext in stats:
-                count, total = stats[ext]
-                stats[ext] = (count + 1, total + size)
-            else:
-                stats[ext] = (1, size)
-
-        # Convert to list and sort by size descending
-        result = [(ext, count, size) for ext, (count, size) in stats.items()]
-        result.sort(key=lambda x: x[2], reverse=True)
-
-        return result
+        return explorer_render.calculate_extension_stats(self)
 
     def _get_extensions_content(self) -> FormattedText:
-        """Generate content for the file types breakdown overlay."""
-        lines: list[tuple[str, str]] = []
-
-        stats = self._calculate_extension_stats()
-
-        # Calculate total size
-        total_size = sum(size for _, _, size in stats)
-        total_count = sum(count for _, count, _ in stats)
-
-        # Shorten path for display
-        path_str = str(self.current_path)
-        home = str(Path.home())
-        if path_str.startswith(home):
-            path_str = "~" + path_str[len(home) :]
-
-        # Truncate if too long
-        max_path_len = 40
-        if len(path_str) > max_path_len:
-            path_str = "..." + path_str[-(max_path_len - 3) :]
-
-        # Box width
-        box_width = 60
-
-        # Top border
-        title = f" File Types in {path_str} "
-        padding = box_width - len(title) - 2
-        left_pad = padding // 2
-        right_pad = padding - left_pad
-        lines.append(("", "\n\n"))
-        lines.append(
-            ("class:overlay-border", f"  ╭{'─' * left_pad}{title}{'─' * right_pad}╮\n")
-        )
-        lines.append(("class:overlay-border", f"  │{' ' * (box_width - 2)}│\n"))
-
-        # Header row
-        header = "  Extension       Count        Size       % of Total"
-        lines.append(("class:overlay-border", "  │"))
-        lines.append(("class:overlay-header", f"{header:<{box_width - 4}}"))
-        lines.append(("class:overlay-border", "│\n"))
-
-        # Separator
-        lines.append(("class:overlay-border", f"  │{'─' * (box_width - 2)}│\n"))
-
-        # Group small extensions into "(other)"
-        threshold = total_size * 0.001 if total_size > 0 else 0  # 0.1% threshold
-        max_extensions = 15
-        other_count = 0
-        other_size = 0
-        displayed = 0
-
-        for ext, count, size in stats:
-            if displayed >= max_extensions or (size < threshold and displayed > 0):
-                other_count += count
-                other_size += size
-            else:
-                percent = (size / total_size * 100) if total_size > 0 else 0
-                size_str = format_size(size)
-                row = f"  {ext:<14} {count:>6}   {size_str:>10}       {percent:>5.1f}%"
-                lines.append(("class:overlay-border", "  │"))
-                lines.append(("class:overlay-row", f"{row:<{box_width - 4}}"))
-                lines.append(("class:overlay-border", "│\n"))
-                displayed += 1
-
-        # Add "(other)" row if needed
-        if other_count > 0:
-            percent = (other_size / total_size * 100) if total_size > 0 else 0
-            size_str = format_size(other_size)
-            row = f"  {'(other)':<14} {other_count:>6}   {size_str:>10}       {percent:>5.1f}%"
-            lines.append(("class:overlay-border", "  │"))
-            lines.append(("class:overlay-row-dim", f"{row:<{box_width - 4}}"))
-            lines.append(("class:overlay-border", "│\n"))
-
-        # Separator
-        lines.append(("class:overlay-border", f"  │{'─' * (box_width - 2)}│\n"))
-
-        # Total row
-        total_size_str = format_size(total_size)
-        total_row = (
-            f"  {'Total':<14} {total_count:>6}   {total_size_str:>10}       100.0%"
-        )
-        lines.append(("class:overlay-border", "  │"))
-        lines.append(("class:overlay-total", f"{total_row:<{box_width - 4}}"))
-        lines.append(("class:overlay-border", "│\n"))
-
-        # Empty line
-        lines.append(("class:overlay-border", f"  │{' ' * (box_width - 2)}│\n"))
-
-        # Bottom border
-        lines.append(("class:overlay-border", f"  ╰{'─' * (box_width - 2)}╯\n"))
-
-        # Instructions
-        lines.append(
-            ("class:overlay-help", "                   Press 'e' or Esc to close\n")
-        )
-
-        return FormattedText(lines)
+        return explorer_render.get_extensions_content(self)
 
     def _get_help_content(self) -> FormattedText:
-        """Generate the help overlay content."""
-        lines: list[tuple[str, str]] = []
-
-        # Build the help box
-        help_text = [
-            "",
-            "╭─────────────────── Keyboard Shortcuts ───────────────────╮",
-            "│                                                          │",
-            "│  Navigation                                              │",
-            "│    ↑/k        Move up                                    │",
-            "│    ↓/j        Move down                                  │",
-            "│    Enter/l    Open directory                             │",
-            "│    h/Backspace Go to parent                              │",
-            "│    g          Go to top                                  │",
-            "│    G          Go to bottom                               │",
-            "│    Ctrl+U     Page up                                    │",
-            "│    Ctrl+D     Page down                                  │",
-            "│    ~          Go to home directory                       │",
-            "│    /          Go to root                                 │",
-            "│                                                          │",
-            "│  Selection                                               │",
-            "│    Space      Toggle selection                           │",
-            "│    *          Select all visible                         │",
-            "│    u          Deselect all                               │",
-            "│                                                          │",
-            "│  Filtering                                               │",
-            "│    f          Filter by name                             │",
-            "│    a          Filter by age (days old)                   │",
-            "│    c          Clear name filter                          │",
-            "│    A          Clear age filter                           │",
-            "│                                                          │",
-            "│  Actions                                                 │",
-            "│    d          Delete selected                            │",
-            "│    v          View selection                             │",
-            "│    o          Open in Finder                             │",
-            "│    i          Show item info                             │",
-            "│    r          Refresh                                    │",
-            "│                                                          │",
-            "│  Display                                                 │",
-            "│    s          Cycle sort mode                            │",
-            "│    t          Toggle small items                         │",
-            "│    ?          Show/hide this help                        │",
-            "│    q/Esc      Quit                                       │",
-            "│                                                          │",
-            "╰──────────────────────────────────────────────────────────╯",
-            "",
-            "                    Press any key to close",
-            "",
-        ]
-
-        for line in help_text:
-            lines.append(("class:help-box", f"  {line}\n"))
-
-        return FormattedText(lines)
+        return explorer_render.get_help_content(self)
 
     def _get_content(self) -> FormattedText:
-        """Generate the full screen content."""
-        # Show help overlay if active
-        if self.show_help:
-            return self._get_help_content()
-
-        # Show extensions overlay if active
-        if self.show_extensions:
-            return self._get_extensions_content()
-
-        lines: list[tuple[str, str]] = []
-
-        # Get items to display (filtered or all)
-        display_items = self._get_display_items()
-
-        # Breadcrumb navigation header with size
-        cached_size = self.explorer.get_cached_size(self.current_path)
-        if cached_size is not None:
-            size_str = format_size(cached_size)
-        else:
-            # Sum up known child sizes as an estimate
-            known_size = sum(item.size for item in self.items if item.size > 0)
-            if known_size > 0:
-                size_str = f"~{format_size(known_size)}"
-            else:
-                size_str = "..."
-
-        lines.append(("", "\n  "))
-        lines.extend(self._get_breadcrumbs())
-        lines.append(("class:path-size", f" ({size_str})"))
-        lines.append(("", "\n\n"))
-
-        # Instructions with new keybindings
-        lines.append(
-            (
-                "class:help",
-                "  [j/k] Navigate  [g/G] Top/Bottom  [Ctrl+U/D] Page  "
-                "[Enter] Open  [h] Back  [?] Help\n",
-            )
-        )
-        lines.append(
-            (
-                "class:help",
-                "  [Space] Select  [*] All  [u] None  [d] Delete  [v] View  "
-                "[f] Filter  [e] Types  [?] Help  [q] Quit\n",
-            )
-        )
-
-        # Small items hint
-        if not self.show_small_items:
-            threshold = format_size(self.explorer.min_size_bytes)
-            lines.append(
-                (
-                    "class:hint",
-                    f"  Hiding items < {threshold}. Press [t] to show all.\n",
-                )
-            )
-
-        lines.append(("", "\n"))
-
-        # Header
-        lines.append(("class:header", "  "))
-        lines.extend(self._get_header())
-        lines.append(("", "\n"))
-        lines.append(("class:header", "  " + "─" * 95 + "\n"))
-
-        # Rows
-        if not display_items:
-            if self.filtered_items is not None:
-                lines.append(("class:dim", "  (no items match filter)\n"))
-            else:
-                lines.append(
-                    ("class:dim", "  (empty or no items above size threshold)\n")
-                )
-        else:
-            # Calculate viewport size based on terminal height
-            # Reserve lines for: header(~8), footer(~8), info panel if shown(~6)
-            term_height = get_terminal_size().lines
-            reserved_lines = 16 if not self.show_info_panel else 22
-            viewport_size = max(5, term_height - reserved_lines)
-
-            total = len(display_items)
-            if total <= viewport_size:
-                start, end = 0, total
-            else:
-                # Window around cursor
-                half_viewport = viewport_size // 2
-                start = max(0, self.cursor - half_viewport)
-                end = min(total, start + viewport_size)
-                if end - start < viewport_size:
-                    start = max(0, end - viewport_size)
-
-            if start > 0:
-                lines.append(("class:dim", f"  ... {start} more items above ...\n"))
-
-            for idx in range(start, end):
-                lines.append(("", "  "))
-                lines.extend(self._get_row(idx, display_items))
-                lines.append(("", "\n"))
-
-            if end < total:
-                lines.append(
-                    ("class:dim", f"  ... {total - end} more items below ...\n")
-                )
-
-        # Footer
-        lines.append(("", "\n"))
-        lines.append(("class:header", "  " + "─" * 95 + "\n"))
-
-        # Info panel (if enabled)
-        if self.show_info_panel and display_items and self.cursor < len(display_items):
-            item = display_items[self.cursor]
-            lines.append(("class:info-header", "  Item Info:\n"))
-            lines.extend(self._get_item_info(item))
-            lines.append(("class:header", "  " + "─" * 95 + "\n"))
-
-        # Filter status
-        if self.age_filter_mode:
-            lines.append(
-                (
-                    "class:filter-input",
-                    f"  Show items older than (days): {self.age_filter_input}_\n",
-                )
-            )
-        elif self.filter_mode:
-            lines.append(("class:filter-input", f"  Filter: {self.filter_text}_\n"))
-        elif self.filtered_items is not None or self.age_filter_days is not None:
-            filter_parts = []
-            if self.filter_text:
-                filter_parts.append(f'Name: "{self.filter_text}"')
-            if self.age_filter_days is not None:
-                filter_parts.append(f"Age: >{self.age_filter_days} days")
-            filter_str = " | ".join(filter_parts)
-            lines.append(
-                (
-                    "class:filter-active",
-                    f"  {filter_str} ({len(self.filtered_items) if self.filtered_items else len(self.items)} of {len(self.items)})  │  [c] Clear name  [A] Clear age\n",
-                )
-            )
-
-        # Age filter hint
-        if (
-            self.age_filter_days is not None
-            and not self.age_filter_mode
-            and not self.filter_mode
-        ):
-            lines.append(
-                (
-                    "class:hint",
-                    f"  Showing items older than {self.age_filter_days} days | [A] Clear age filter\n",
-                )
-            )
-
-        # Selection summary - always show prominently at bottom
-        total_selected_size = sum(
-            self.explorer.get_cached_size(p) or 0 for p in self.selected
-        )
-        if self.selected:
-            lines.append(
-                (
-                    "class:selection-summary",
-                    f"  Selected: {len(self.selected)} items ({format_size(total_selected_size)}) "
-                    f"| Press [d] to delete, [v] to view\n",
-                )
-            )
-        else:
-            lines.append(
-                (
-                    "class:selection-hint",
-                    "  Selected: 0 items | Press [Space] to select items\n",
-                )
-            )
-
-        # Status message
-        if self.status_message:
-            lines.append(("class:status", f"  {self.status_message}\n"))
-
-        # Sort mode indicator
-        sort_label = {"size": "Size", "name": "Name", "modified": "Modified"}[
-            self.sort_mode
-        ]
-        lines.append(("class:dim", f"  Sort: {sort_label} | [r] Refresh\n"))
-
-        return FormattedText(lines)
+        return explorer_render.get_content(self)
 
     def navigate_into(self, item: DiskItem) -> None:
         """Navigate into a directory."""
@@ -998,6 +545,20 @@ class DiskExplorerUI:
         def refresh_dir(event):
             self.refresh()
 
+        @kb.add("b")
+        def go_next_bookmark(event):
+            if self.filter_mode:
+                self.filter_text += "b"
+                return
+            self._go_to_next_bookmark()
+
+        @kb.add("B")
+        def bookmark_current(event):
+            if self.filter_mode:
+                self.filter_text += "B"
+                return
+            self._bookmark_current_path()
+
         @kb.add("o")
         def open_in_finder(event):
             display_items = self._get_display_items()
@@ -1017,7 +578,7 @@ class DiskExplorerUI:
         @kb.add("v")
         def view_selection(event):
             if self.selected:
-                self._show_selection_view(event.app)
+                self._show_selection_view()
 
         @kb.add("d")
         def delete_selected(event):
@@ -1209,6 +770,7 @@ class DiskExplorerUI:
                 "footer": "bold",
                 "status": "italic fg:ansicyan",
                 "dim": "dim",
+                "bookmark-hint": "fg:ansigreen",
                 # Breadcrumb styles
                 "breadcrumb": "fg:ansicyan",
                 "breadcrumb-sep": "dim fg:ansiwhite",
@@ -1270,10 +832,5 @@ class DiskExplorerUI:
             return self.selected
         return set()
 
-    def _show_selection_view(self, app: Application) -> None:
-        """Show the selection view modal."""
-        # This is a simplified version - in a full implementation
-        # you'd want a proper modal/overlay
-        self.status_message = (
-            f"Selection: {len(self.selected)} items - press [d] to delete"
-        )
+    def _show_selection_view(self) -> None:
+        explorer_render.show_selection_view(self)
