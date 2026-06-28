@@ -4,6 +4,7 @@ A fast CLI for reclaiming disk space by finding stale projects, large files, cac
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Snyk Vulnerabilities for GitHub Repo](https://snyk.io/test/github/sohanmanju/yeet/badge.svg?targetFile=requirements.txt)
 
 ## Features
 
@@ -95,6 +96,11 @@ Clean leftover data from uninstalled macOS apps.
 - Protects system paths and user-configured protected paths
 - Supports user-defined ignored paths for explorer scans
 - Records cleanup history automatically
+
+### Security
+
+- Dependency vulnerabilities are checked in GitHub Actions with Snyk
+- Configure the `SNYK_TOKEN` repository secret for the security workflow
 
 ## Installation
 
