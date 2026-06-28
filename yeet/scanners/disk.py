@@ -81,7 +81,9 @@ class DiskExplorer:
             min_size_bytes: Minimum size in bytes to show items (default 5 MB)
         """
         self.min_size_bytes = min_size_bytes
-        self.ignored_paths = [path.expanduser().resolve() for path in ignored_paths or []]
+        self.ignored_paths = [
+            path.expanduser().resolve() for path in ignored_paths or []
+        ]
         # Use OrderedDict for LRU cache behavior
         self._size_cache: OrderedDict[str, int] = OrderedDict()
         self._active_processes: list[subprocess.Popen] = []

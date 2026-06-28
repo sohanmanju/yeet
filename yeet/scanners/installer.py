@@ -59,7 +59,9 @@ class InstallerScanner:
         else:
             for source, path in self.DEFAULT_ROOTS:
                 if path.exists():
-                    self._scan_root(results, path, source, min_size_bytes, progress_callback)
+                    self._scan_root(
+                        results, path, source, min_size_bytes, progress_callback
+                    )
 
         results.items.sort(key=lambda item: item.size, reverse=True)
         return results

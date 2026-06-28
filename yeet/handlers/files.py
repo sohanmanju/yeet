@@ -117,9 +117,13 @@ def display_file_deletion_results(
     total_reclaimed = sum(f.size for f, success, _ in deleted_files if success)
 
     action_noun = (
-        "would be moved to trash" if use_trash else "would be deleted"
-    ) if dry_run else ("moved to trash" if use_trash else "deleted")
-    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+        ("would be moved to trash" if use_trash else "would be deleted")
+        if dry_run
+        else ("moved to trash" if use_trash else "deleted")
+    )
+    title_action = (
+        "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+    )
     size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
 
     result_text = (
@@ -198,7 +202,9 @@ def handle_large_files(console: Console, args: argparse.Namespace) -> None:
     dry_run = getattr(args, "dry_run", False)
     json_mode = getattr(args, "json", False)
     use_trash = (
-        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+        config.use_trash
+        if json_mode
+        else check_trash_availability(console, config.use_trash)
     )
 
     # Get directory

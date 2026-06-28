@@ -137,10 +137,18 @@ def display_deletion_results(
 
     total_reclaimed = sum(p.total_size for p, success, _ in deleted_projects if success)
 
-    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+    title_action = (
+        "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Deletion")
+    )
     size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
-    item_label = "would be moved to trash" if dry_run and use_trash else (
-        "would be deleted" if dry_run else ("moved to trash" if use_trash else "deleted")
+    item_label = (
+        "would be moved to trash"
+        if dry_run and use_trash
+        else (
+            "would be deleted"
+            if dry_run
+            else ("moved to trash" if use_trash else "deleted")
+        )
     )
 
     result_text = (
@@ -225,10 +233,18 @@ def display_cache_deletion_results(
 
     total_reclaimed = sum(c.size for c, success, _ in deleted_caches if success)
 
-    title_action = "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Cache Cleanup")
+    title_action = (
+        "Dry Run" if dry_run else ("Moved to Trash" if use_trash else "Cache Cleanup")
+    )
     size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
-    item_label = "would be moved to trash" if dry_run and use_trash else (
-        "would be cleared" if dry_run else ("moved to trash" if use_trash else "cleared")
+    item_label = (
+        "would be moved to trash"
+        if dry_run and use_trash
+        else (
+            "would be cleared"
+            if dry_run
+            else ("moved to trash" if use_trash else "cleared")
+        )
     )
 
     result_text = (

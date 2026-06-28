@@ -42,7 +42,9 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
     json_mode = getattr(args, "json", False)
     start_path = Path(config.start_path).expanduser()
     use_trash = (
-        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+        config.use_trash
+        if json_mode
+        else check_trash_availability(console, config.use_trash)
     )
 
     # Create explorer using config settings
@@ -119,9 +121,7 @@ def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
 
     # Determine action text based on trash setting
     if dry_run:
-        action_verb = (
-            "would move to trash" if use_trash else "would delete permanently"
-        )
+        action_verb = "would move to trash" if use_trash else "would delete permanently"
         action_noun = "Would move to trash" if use_trash else "Would delete"
     else:
         action_verb = "move to trash" if use_trash else "delete permanently"

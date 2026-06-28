@@ -234,7 +234,9 @@ class ProjectScanner:
                                     latest_atime = fstat.st_atime
                             elif entry.is_dir(follow_symlinks=False):
                                 name = entry.name
-                                if name not in SKIP_FOR_SIZE and not name.startswith("."):
+                                if name not in SKIP_FOR_SIZE and not name.startswith(
+                                    "."
+                                ):
                                     stack.append(Path(entry.path))
                         except (OSError, PermissionError):
                             continue

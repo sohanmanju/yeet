@@ -79,7 +79,9 @@ def get_item_info(ui, item: DiskItem) -> FormattedText:
     lines.append(("class:info-label", "  Modified: "))
     try:
         lines.append(("class:info-value", item.modified.strftime("%Y-%m-%d %H:%M:%S")))
-        lines.append(("class:info-dim", f" ({format_days_ago(item.days_since_modified)})"))
+        lines.append(
+            ("class:info-dim", f" ({format_days_ago(item.days_since_modified)})")
+        )
     except (OSError, ValueError, AttributeError):
         lines.append(("class:info-value", "Unknown"))
     lines.append(("", "\n"))
@@ -178,7 +180,9 @@ def get_extensions_content(ui) -> FormattedText:
     left_pad = padding // 2
     right_pad = padding - left_pad
     lines.append(("", "\n\n"))
-    lines.append(("class:overlay-border", f"  ╭{'─' * left_pad}{title}{'─' * right_pad}╮\n"))
+    lines.append(
+        ("class:overlay-border", f"  ╭{'─' * left_pad}{title}{'─' * right_pad}╮\n")
+    )
     lines.append(("class:overlay-border", f"  │{' ' * (box_width - 2)}│\n"))
 
     header = "  Extension       Count        Size       % of Total"
@@ -222,7 +226,9 @@ def get_extensions_content(ui) -> FormattedText:
     lines.append(("class:overlay-border", "│\n"))
     lines.append(("class:overlay-border", f"  │{' ' * (box_width - 2)}│\n"))
     lines.append(("class:overlay-border", f"  ╰{'─' * (box_width - 2)}╯\n"))
-    lines.append(("class:overlay-help", "                   Press 'e' or Esc to close\n"))
+    lines.append(
+        ("class:overlay-help", "                   Press 'e' or Esc to close\n")
+    )
 
     return FormattedText(lines)
 
@@ -304,12 +310,24 @@ def get_content(ui) -> FormattedText:
     lines.append(("class:path-size", f" ({size_str})"))
     lines.append(("", "\n\n"))
 
-    lines.append(("class:help", "  [j/k] Navigate  [g/G] Top/Bottom  [Ctrl+U/D] Page  [Enter] Open  [h] Back  [?] Help\n"))
-    lines.append(("class:help", "  [Space] Select  [*] All  [u] None  [d] Delete  [v] View  [f] Filter  [e] Types  [?] Help  [q] Quit\n"))
+    lines.append(
+        (
+            "class:help",
+            "  [j/k] Navigate  [g/G] Top/Bottom  [Ctrl+U/D] Page  [Enter] Open  [h] Back  [?] Help\n",
+        )
+    )
+    lines.append(
+        (
+            "class:help",
+            "  [Space] Select  [*] All  [u] None  [d] Delete  [v] View  [f] Filter  [e] Types  [?] Help  [q] Quit\n",
+        )
+    )
 
     if not ui.show_small_items:
         threshold = format_size(ui.explorer.min_size_bytes)
-        lines.append(("class:hint", f"  Hiding items < {threshold}. Press [t] to show all.\n"))
+        lines.append(
+            ("class:hint", f"  Hiding items < {threshold}. Press [t] to show all.\n")
+        )
 
     lines.append(("", "\n"))
     lines.append(("class:header", "  "))
@@ -358,7 +376,12 @@ def get_content(ui) -> FormattedText:
         lines.append(("class:header", "  " + "─" * 95 + "\n"))
 
     if ui.age_filter_mode:
-        lines.append(("class:filter-input", f"  Show items older than (days): {ui.age_filter_input}_\n"))
+        lines.append(
+            (
+                "class:filter-input",
+                f"  Show items older than (days): {ui.age_filter_input}_\n",
+            )
+        )
     elif ui.filter_mode:
         lines.append(("class:filter-input", f"  Filter: {ui.filter_text}_\n"))
     elif ui.filtered_items is not None or ui.age_filter_days is not None:
@@ -368,21 +391,48 @@ def get_content(ui) -> FormattedText:
         if ui.age_filter_days is not None:
             filter_parts.append(f"Age: >{ui.age_filter_days} days")
         filter_str = " | ".join(filter_parts)
-        lines.append(("class:filter-active", f"  {filter_str} ({len(ui.filtered_items) if ui.filtered_items else len(ui.items)} of {len(ui.items)})  │  [c] Clear name  [A] Clear age\n"))
+        lines.append(
+            (
+                "class:filter-active",
+                f"  {filter_str} ({len(ui.filtered_items) if ui.filtered_items else len(ui.items)} of {len(ui.items)})  │  [c] Clear name  [A] Clear age\n",
+            )
+        )
 
     if ui.age_filter_days is not None and not ui.age_filter_mode and not ui.filter_mode:
-        lines.append(("class:hint", f"  Showing items older than {ui.age_filter_days} days | [A] Clear age filter\n"))
+        lines.append(
+            (
+                "class:hint",
+                f"  Showing items older than {ui.age_filter_days} days | [A] Clear age filter\n",
+            )
+        )
 
     total_selected_size = sum(ui.explorer.get_cached_size(p) or 0 for p in ui.selected)
     if ui.selected:
-        lines.append(("class:selection-summary", f"  Selected: {len(ui.selected)} items ({format_size(total_selected_size)}) | Press [d] to delete, [v] to view\n"))
+        lines.append(
+            (
+                "class:selection-summary",
+                f"  Selected: {len(ui.selected)} items ({format_size(total_selected_size)}) | Press [d] to delete, [v] to view\n",
+            )
+        )
     else:
-        lines.append(("class:selection-hint", "  Selected: 0 items | Press [Space] to select items\n"))
+        lines.append(
+            (
+                "class:selection-hint",
+                "  Selected: 0 items | Press [Space] to select items\n",
+            )
+        )
 
     if ui.bookmarks:
-        bookmark_names = ", ".join(path.name if path.name else "/" for path in ui.bookmarks[:4])
+        bookmark_names = ", ".join(
+            path.name if path.name else "/" for path in ui.bookmarks[:4]
+        )
         more = f" +{len(ui.bookmarks) - 4} more" if len(ui.bookmarks) > 4 else ""
-        lines.append(("class:bookmark-hint", f"  Bookmarks: {bookmark_names}{more} | [b] Next [B] Add current\n"))
+        lines.append(
+            (
+                "class:bookmark-hint",
+                f"  Bookmarks: {bookmark_names}{more} | [b] Next [B] Add current\n",
+            )
+        )
 
     if ui.status_message:
         lines.append(("class:status", f"  {ui.status_message}\n"))

@@ -71,7 +71,10 @@ def perform_xcode_deletions(
                 uuid = item.app_info.get("uuid") if item.app_info else None
                 if uuid:
                     if dry_run:
-                        success, msg = True, f"Dry run: would delete runtime {item.name}"
+                        success, msg = (
+                            True,
+                            f"Dry run: would delete runtime {item.name}",
+                        )
                     else:
                         try:
                             result = subprocess.run(
@@ -190,11 +193,11 @@ def handle_xcode_cleanup(console: Console, args: argparse.Namespace) -> None:
             deletion_results = perform_xcode_deletions(
                 console, items_to_delete, dry_run=dry_run
             )
-            display_xcode_deletion_results(
-                console, deletion_results, dry_run=dry_run
-            )
+            display_xcode_deletion_results(console, deletion_results, dry_run=dry_run)
             reclaimed = sum(
-                item.size for item, success, _ in deletion_results if success and not dry_run
+                item.size
+                for item, success, _ in deletion_results
+                if success and not dry_run
             )
             record_history(
                 "xcode",

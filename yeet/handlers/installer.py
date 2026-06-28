@@ -33,9 +33,13 @@ def _display_installer_summary(console: Console, results) -> None:
     source_totals = {
         source: sum(item.size for item in items) for source, items in by_source.items()
     }
-    for source, total in sorted(source_totals.items(), key=lambda item: item[1], reverse=True):
+    for source, total in sorted(
+        source_totals.items(), key=lambda item: item[1], reverse=True
+    ):
         items = by_source[source]
-        source_lines.append(f"  {source}: {len(items)} installers ({format_size(total)})")
+        source_lines.append(
+            f"  {source}: {len(items)} installers ({format_size(total)})"
+        )
 
     summary_text = "\n".join(source_lines) if source_lines else "  No installers found"
 
@@ -64,7 +68,9 @@ def handle_installer_cleanup(console: Console, args: argparse.Namespace) -> None
     dry_run = getattr(args, "dry_run", False)
     json_mode = getattr(args, "json", False)
     use_trash = (
-        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+        config.use_trash
+        if json_mode
+        else check_trash_availability(console, config.use_trash)
     )
 
     root = None

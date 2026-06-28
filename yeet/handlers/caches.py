@@ -127,7 +127,9 @@ def handle_cache_scan(console: Console, args: argparse.Namespace) -> None:
     dry_run = getattr(args, "dry_run", False)
     json_mode = getattr(args, "json", False)
     use_trash = (
-        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+        config.use_trash
+        if json_mode
+        else check_trash_availability(console, config.use_trash)
     )
 
     # Show OS info

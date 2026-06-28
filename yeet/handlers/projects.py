@@ -93,7 +93,9 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
     dry_run = getattr(args, "dry_run", False)
     json_mode = getattr(args, "json", False)
     use_trash = (
-        config.use_trash if json_mode else check_trash_availability(console, config.use_trash)
+        config.use_trash
+        if json_mode
+        else check_trash_availability(console, config.use_trash)
     )
 
     # Get directory
@@ -165,7 +167,9 @@ def handle_stale_projects(console: Console, args: argparse.Namespace) -> None:
                 console, deletion_results, use_trash=use_trash, dry_run=dry_run
             )
             reclaimed = sum(
-                p.total_size for p, success, _ in deletion_results if success and not dry_run
+                p.total_size
+                for p, success, _ in deletion_results
+                if success and not dry_run
             )
             record_history(
                 "projects",

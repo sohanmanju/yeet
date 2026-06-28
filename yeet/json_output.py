@@ -190,7 +190,9 @@ def purge_scan_payload(root_path: Path, results: PurgeScanResults) -> dict:
     }
 
 
-def installer_scan_payload(root_path: Path | None, results: InstallerScanResults) -> dict:
+def installer_scan_payload(
+    root_path: Path | None, results: InstallerScanResults
+) -> dict:
     return {
         "root_path": str(root_path) if root_path is not None else None,
         "total_size": results.total_size,

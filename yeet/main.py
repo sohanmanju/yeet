@@ -49,15 +49,63 @@ class Workflow:
 
 
 WORKFLOWS: list[Workflow] = [
-    Workflow("projects", "Stale Projects", "Find old coding projects not touched in a while", handle_stale_projects, aliases=("p",)),
-    Workflow("files", "Large Files", "Find big files taking up space", handle_large_files, aliases=("f", "large")),
-    Workflow("caches", "System Caches", "Clear browser, package manager, and app caches", handle_cache_scan, aliases=("c", "cache")),
-    Workflow("purge", "Project Artifacts", "Remove build outputs and dependency caches", handle_purge, aliases=("artifacts",)),
-    Workflow("installer", "Installer Cleanup", "Remove downloaded installers", handle_installer_cleanup, aliases=("i", "installers")),
-    Workflow("leftovers", "App Leftovers", "Clean data from uninstalled apps", handle_leftovers_cleanup, macos_only=True, aliases=("l",)),
-    Workflow("xcode", "Xcode Cleanup", "Clean device support, simulators, derived data", handle_xcode_cleanup, macos_only=True, aliases=("x",)),
-    Workflow("explore", "Explore Disk", "Browse directories by size", handle_disk_explorer),
-    Workflow("history", "History", "Review past cleanup runs", handle_history, aliases=("h",)),
+    Workflow(
+        "projects",
+        "Stale Projects",
+        "Find old coding projects not touched in a while",
+        handle_stale_projects,
+        aliases=("p",),
+    ),
+    Workflow(
+        "files",
+        "Large Files",
+        "Find big files taking up space",
+        handle_large_files,
+        aliases=("f", "large"),
+    ),
+    Workflow(
+        "caches",
+        "System Caches",
+        "Clear browser, package manager, and app caches",
+        handle_cache_scan,
+        aliases=("c", "cache"),
+    ),
+    Workflow(
+        "purge",
+        "Project Artifacts",
+        "Remove build outputs and dependency caches",
+        handle_purge,
+        aliases=("artifacts",),
+    ),
+    Workflow(
+        "installer",
+        "Installer Cleanup",
+        "Remove downloaded installers",
+        handle_installer_cleanup,
+        aliases=("i", "installers"),
+    ),
+    Workflow(
+        "leftovers",
+        "App Leftovers",
+        "Clean data from uninstalled apps",
+        handle_leftovers_cleanup,
+        macos_only=True,
+        aliases=("l",),
+    ),
+    Workflow(
+        "xcode",
+        "Xcode Cleanup",
+        "Clean device support, simulators, derived data",
+        handle_xcode_cleanup,
+        macos_only=True,
+        aliases=("x",),
+    ),
+    Workflow(
+        "explore", "Explore Disk", "Browse directories by size", handle_disk_explorer
+    ),
+    Workflow(
+        "history", "History", "Review past cleanup runs", handle_history, aliases=("h",)
+    ),
 ]
 
 
@@ -98,15 +146,21 @@ def show_main_menu(console: Console) -> str:
     from prompt_toolkit.styles import Style
 
     workflows = _available_workflows()
-    choice_map = {str(idx): workflow.key for idx, workflow in enumerate(workflows, start=1)}
+    choice_map = {
+        str(idx): workflow.key for idx, workflow in enumerate(workflows, start=1)
+    }
     choice_map.update({workflow.key: workflow.key for workflow in workflows})
-    choice_map.update({alias: workflow.key for workflow in workflows for alias in workflow.aliases})
+    choice_map.update(
+        {alias: workflow.key for workflow in workflows for alias in workflow.aliases}
+    )
     choice_map.update({"q": "quit", "quit": "quit", "exit": "quit", "": "quit"})
 
     console.print()
     console.print("[bold]What would you like to clean up?[/]\n")
     for idx, workflow in enumerate(workflows, start=1):
-        console.print(f"  [cyan][{idx}][/] [bold]{workflow.label}[/]  - {workflow.description}")
+        console.print(
+            f"  [cyan][{idx}][/] [bold]{workflow.label}[/]  - {workflow.description}"
+        )
     console.print("  [cyan][q][/] [bold]Quit[/]")
     console.print()
 
@@ -259,7 +313,9 @@ def main() -> int:
             return 0
 
         if args.json:
-            console.print("[red]Error:[/] --json requires --workflow to select a workflow")
+            console.print(
+                "[red]Error:[/] --json requires --workflow to select a workflow"
+            )
             return 1
 
         # Handle export mode (non-interactive)

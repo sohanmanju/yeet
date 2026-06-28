@@ -120,7 +120,9 @@ class DiskExplorerUI:
         self.show_info_panel: bool = False
 
         # Bookmarks
-        self.bookmarks: list[Path] = [Path(path).expanduser() for path in self._config.bookmarks]
+        self.bookmarks: list[Path] = [
+            Path(path).expanduser() for path in self._config.bookmarks
+        ]
 
         # Quit warning state
         self._quit_warned: bool = False

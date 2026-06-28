@@ -109,7 +109,9 @@ def render_history(console: Console, entries: list[dict]) -> None:
     for entry in entries:
         timestamp = str(entry.get("timestamp", ""))
         if "T" in timestamp:
-            timestamp = timestamp.split("T", 1)[0] + " " + timestamp.split("T", 1)[1][:8]
+            timestamp = (
+                timestamp.split("T", 1)[0] + " " + timestamp.split("T", 1)[1][:8]
+            )
         table.add_row(
             timestamp,
             str(entry.get("workflow", "")),
