@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
+from glob import glob
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -21,7 +23,7 @@ class CacheScanner:
 
     Detects caches for:
     - Browsers (Chrome, Firefox, Safari, Edge)
-    - Package managers (npm, yarn, pip, cargo, go, maven, gradle, cocoapods, etc.)
+    - Package managers (npm, yarn, pip, cargo, go, gradle, cocoapods, etc.)
     - Build tools (Xcode, Android, CMake, Bazel)
     - Containers (Docker, Podman)
     - IDEs/Editors (VS Code, JetBrains, Xcode)
@@ -67,10 +69,7 @@ class CacheScanner:
             "Safari Cache",
             CacheCategory.BROWSER,
             {
-                "darwin": [
-                    "Library/Caches/com.apple.Safari",
-                    "Library/Safari/LocalStorage",
-                ],
+                "darwin": ["Library/Caches/com.apple.Safari"],
             },
         ),
         (
@@ -130,9 +129,9 @@ class CacheScanner:
             "pnpm Cache",
             CacheCategory.PACKAGE_MANAGER,
             {
-                "darwin": ["Library/pnpm/store", "Library/Caches/pnpm"],
-                "linux": [".local/share/pnpm/store", ".cache/pnpm"],
-                "windows": ["AppData/Local/pnpm/store"],
+                "darwin": ["Library/Caches/pnpm"],
+                "linux": [".cache/pnpm"],
+                "windows": ["AppData/Local/pnpm/Cache"],
             },
         ),
         (
@@ -172,30 +171,12 @@ class CacheScanner:
             },
         ),
         (
-            "Cargo Cache",
-            CacheCategory.PACKAGE_MANAGER,
-            {
-                "darwin": [".cargo/registry", ".cargo/git"],
-                "linux": [".cargo/registry", ".cargo/git"],
-                "windows": [".cargo/registry", ".cargo/git"],
-            },
-        ),
-        (
             "Go Module Cache",
             CacheCategory.PACKAGE_MANAGER,
             {
                 "darwin": ["go/pkg/mod/cache"],
                 "linux": ["go/pkg/mod/cache"],
                 "windows": ["go/pkg/mod/cache"],
-            },
-        ),
-        (
-            "Maven Cache",
-            CacheCategory.PACKAGE_MANAGER,
-            {
-                "darwin": [".m2/repository"],
-                "linux": [".m2/repository"],
-                "windows": [".m2/repository"],
             },
         ),
         (
@@ -218,9 +199,9 @@ class CacheScanner:
             "RubyGems Cache",
             CacheCategory.PACKAGE_MANAGER,
             {
-                "darwin": [".gem/ruby", "Library/Caches/gem"],
-                "linux": [".gem/ruby", ".cache/gem"],
-                "windows": [".gem/ruby"],
+                "darwin": ["Library/Caches/gem"],
+                "linux": [".cache/gem"],
+                "windows": [],
             },
         ),
         (
@@ -233,29 +214,11 @@ class CacheScanner:
             },
         ),
         (
-            "Pub Cache (Dart/Flutter)",
-            CacheCategory.PACKAGE_MANAGER,
-            {
-                "darwin": [".pub-cache"],
-                "linux": [".pub-cache"],
-                "windows": ["AppData/Local/Pub/Cache"],
-            },
-        ),
-        (
             "Homebrew Cache",
             CacheCategory.PACKAGE_MANAGER,
             {
                 "darwin": ["Library/Caches/Homebrew"],
                 "linux": [".cache/Homebrew"],
-            },
-        ),
-        (
-            "NuGet Cache (.NET)",
-            CacheCategory.PACKAGE_MANAGER,
-            {
-                "darwin": [".nuget/packages"],
-                "linux": [".nuget/packages"],
-                "windows": [".nuget/packages", "AppData/Local/NuGet/Cache"],
             },
         ),
         # =====================
@@ -269,34 +232,10 @@ class CacheScanner:
             },
         ),
         (
-            "Xcode Archives",
-            CacheCategory.BUILD_TOOL,
-            {
-                "darwin": ["Library/Developer/Xcode/Archives"],
-            },
-        ),
-        (
-            "Xcode iOS DeviceSupport",
-            CacheCategory.BUILD_TOOL,
-            {
-                "darwin": ["Library/Developer/Xcode/iOS DeviceSupport"],
-            },
-        ),
-        (
-            "Xcode watchOS DeviceSupport",
-            CacheCategory.BUILD_TOOL,
-            {
-                "darwin": ["Library/Developer/Xcode/watchOS DeviceSupport"],
-            },
-        ),
-        (
             "CoreSimulator Caches",
             CacheCategory.BUILD_TOOL,
             {
-                "darwin": [
-                    "Library/Developer/CoreSimulator/Caches",
-                    "Library/Developer/CoreSimulator/Devices",
-                ],
+                "darwin": ["Library/Developer/CoreSimulator/Caches"],
             },
         ),
         (
@@ -306,16 +245,13 @@ class CacheScanner:
                 "darwin": [
                     "Library/Android/sdk/.downloadIntermediates",
                     ".android/cache",
-                    ".android/avd",
                 ],
                 "linux": [
                     ".android/cache",
-                    ".android/avd",
                     "Android/Sdk/.downloadIntermediates",
                 ],
                 "windows": [
                     ".android/cache",
-                    ".android/avd",
                     "AppData/Local/Android/Sdk/.downloadIntermediates",
                 ],
             },
@@ -366,15 +302,6 @@ class CacheScanner:
             },
         ),
         (
-            "Playwright Cache",
-            CacheCategory.BUILD_TOOL,
-            {
-                "darwin": ["Library/Caches/ms-playwright"],
-                "linux": [".cache/ms-playwright"],
-                "windows": ["AppData/Local/ms-playwright"],
-            },
-        ),
-        (
             "node-gyp Cache",
             CacheCategory.BUILD_TOOL,
             {
@@ -386,34 +313,6 @@ class CacheScanner:
         # =====================
         # CONTAINERS
         # =====================
-        (
-            "Docker Desktop Data",
-            CacheCategory.CONTAINER,
-            {
-                "darwin": [
-                    "Library/Containers/com.docker.docker/Data/vms",
-                    ".docker/buildx",
-                ],
-                "linux": [".docker/buildx", "/var/lib/docker"],
-                "windows": ["AppData/Local/Docker/wsl"],
-            },
-        ),
-        (
-            "Colima (Docker) Cache",
-            CacheCategory.CONTAINER,
-            {
-                "darwin": [".colima"],
-            },
-        ),
-        (
-            "Podman Cache",
-            CacheCategory.CONTAINER,
-            {
-                "darwin": [".local/share/containers"],
-                "linux": [".local/share/containers", "/var/lib/containers"],
-                "windows": ["AppData/Local/containers"],
-            },
-        ),
         (
             "Minikube Cache",
             CacheCategory.CONTAINER,
@@ -445,15 +344,6 @@ class CacheScanner:
             },
         ),
         (
-            "VS Code Extensions",
-            CacheCategory.IDE,
-            {
-                "darwin": [".vscode/extensions"],
-                "linux": [".vscode/extensions"],
-                "windows": [".vscode/extensions"],
-            },
-        ),
-        (
             "Cursor Cache",
             CacheCategory.IDE,
             {
@@ -473,12 +363,9 @@ class CacheScanner:
             "JetBrains IDEs Cache",
             CacheCategory.IDE,
             {
-                "darwin": [
-                    "Library/Caches/JetBrains",
-                    "Library/Application Support/JetBrains",
-                ],
-                "linux": [".cache/JetBrains", ".local/share/JetBrains"],
-                "windows": ["AppData/Local/JetBrains"],
+                "darwin": ["Library/Caches/JetBrains"],
+                "linux": [".cache/JetBrains"],
+                "windows": [],
             },
         ),
         (
@@ -494,19 +381,16 @@ class CacheScanner:
             "Vim/Neovim Cache",
             CacheCategory.IDE,
             {
-                "darwin": [".vim/undodir", ".local/share/nvim", ".cache/nvim"],
-                "linux": [".vim/undodir", ".local/share/nvim", ".cache/nvim"],
-                "windows": ["AppData/Local/nvim-data"],
+                "darwin": [".cache/nvim"],
+                "linux": [".cache/nvim"],
+                "windows": [],
             },
         ),
         (
             "Zed Cache",
             CacheCategory.IDE,
             {
-                "darwin": [
-                    "Library/Caches/dev.zed.Zed",
-                    "Library/Application Support/Zed/languages",
-                ],
+                "darwin": ["Library/Caches/dev.zed.Zed"],
             },
         ),
         # =====================
@@ -519,38 +403,12 @@ class CacheScanner:
         # 3. Deleting them as a whole often fails or times out
         # Instead, we scan specific cache subdirectories above.
         (
-            "Temporary Files",
-            CacheCategory.SYSTEM,
-            {
-                # Only include truly temporary directories that are safe to clear
-                "darwin": ["Library/Caches/TemporaryItems"],
-                "linux": [".cache/tmp"],
-                "windows": ["AppData/Local/Temp"],
-            },
-        ),
-        (
-            "Logs",
-            CacheCategory.SYSTEM,
-            {
-                "darwin": ["Library/Logs"],
-                "linux": [".local/share/logs", "/var/log"],
-                "windows": ["AppData/Local/Logs"],
-            },
-        ),
-        (
             "Thumbnails Cache",
             CacheCategory.SYSTEM,
             {
                 "darwin": ["Library/Caches/com.apple.QuickLook.thumbnailcache"],
                 "linux": [".cache/thumbnails"],
                 "windows": ["AppData/Local/Microsoft/Windows/Explorer"],
-            },
-        ),
-        (
-            "Spotlight Index",
-            CacheCategory.SYSTEM,
-            {
-                "darwin": [".Spotlight-V100"],
             },
         ),
         (
@@ -572,67 +430,6 @@ class CacheScanner:
                 "darwin": [],  # Handled separately - found in project dirs
                 "linux": [],
                 "windows": [],
-            },
-        ),
-        (
-            "Python Virtual Envs (global)",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".virtualenvs"],
-                "linux": [".virtualenvs"],
-                "windows": ["Envs"],
-            },
-        ),
-        (
-            "pyenv Versions",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".pyenv/versions", ".pyenv/cache"],
-                "linux": [".pyenv/versions", ".pyenv/cache"],
-                "windows": [".pyenv/pyenv-win/versions"],
-            },
-        ),
-        (
-            "rbenv/Ruby Versions",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".rbenv/versions"],
-                "linux": [".rbenv/versions"],
-            },
-        ),
-        (
-            "nvm Node Versions",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".nvm/versions"],
-                "linux": [".nvm/versions"],
-                "windows": ["AppData/Roaming/nvm"],
-            },
-        ),
-        (
-            "fnm Node Versions",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": ["Library/Application Support/fnm/node-versions"],
-                "linux": [".local/share/fnm/node-versions"],
-                "windows": ["AppData/Roaming/fnm/node-versions"],
-            },
-        ),
-        (
-            "rustup Toolchains",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".rustup/toolchains"],
-                "linux": [".rustup/toolchains"],
-                "windows": [".rustup/toolchains"],
-            },
-        ),
-        (
-            "SDKMAN! Candidates",
-            CacheCategory.RUNTIME,
-            {
-                "darwin": [".sdkman/candidates", ".sdkman/archives"],
-                "linux": [".sdkman/candidates", ".sdkman/archives"],
             },
         ),
         # =====================
@@ -672,15 +469,6 @@ class CacheScanner:
                 ],
                 "linux": [],
                 "windows": [],
-            },
-        ),
-        (
-            "Trash",
-            CacheCategory.OTHER,
-            {
-                "darwin": [".Trash"],
-                "linux": [".local/share/Trash"],
-                "windows": ["$Recycle.Bin"],
             },
         ),
     ]
@@ -731,6 +519,150 @@ class CacheScanner:
 
         return total_size, file_count, datetime.fromtimestamp(latest_mtime)
 
+    def _expand_candidate_paths(self, rel_path: str) -> list[Path]:
+        raw_paths: list[str]
+        if any(char in rel_path for char in "*?[]"):
+            pattern = rel_path
+            if not rel_path.startswith("/"):
+                pattern = str(self.home / rel_path)
+            raw_paths = glob(pattern)
+        else:
+            raw_paths = [
+                str(
+                    Path(rel_path) if rel_path.startswith("/") else self.home / rel_path
+                )
+            ]
+
+        paths: list[Path] = []
+        for raw_path in raw_paths:
+            path = Path(raw_path)
+            try:
+                if path.exists() and path.is_dir() and not path.is_symlink():
+                    paths.append(path)
+            except OSError:
+                continue
+        return paths
+
+    def _expand_browser_cache_paths(
+        self,
+    ) -> list[tuple[str, CacheCategory, Path, bool]]:
+        if self.os_type != "darwin":
+            return []
+
+        browser_roots = [
+            ("Chrome", "Library/Application Support/Google/Chrome"),
+            ("Brave", "Library/Application Support/BraveSoftware/Brave-Browser"),
+            ("Edge", "Library/Application Support/Microsoft Edge"),
+            ("Arc", "Library/Application Support/company.thebrowser.Browser"),
+            ("Vivaldi", "Library/Application Support/Vivaldi"),
+            ("Opera", "Library/Application Support/com.operasoftware.Opera"),
+        ]
+        browser_subdirs = [
+            "*/Code Cache",
+            "*/GPUCache",
+            "*/DawnCache",
+            "*/GrShaderCache",
+            "*/GraphiteDawnCache",
+            "*/Cache",
+        ]
+
+        candidates: list[tuple[str, CacheCategory, Path, bool]] = []
+        for browser_name, browser_root in browser_roots:
+            for subdir in browser_subdirs:
+                pattern = f"{browser_root}/{subdir}"
+                for path in self._expand_candidate_paths(pattern):
+                    candidates.append(
+                        (f"{browser_name} Cache", CacheCategory.BROWSER, path, False)
+                    )
+        return candidates
+
+    def _expand_container_cache_paths(
+        self,
+    ) -> list[tuple[str, CacheCategory, Path, bool]]:
+        if self.os_type != "darwin":
+            return []
+
+        candidates: list[tuple[str, CacheCategory, Path, bool]] = []
+        patterns = [
+            (
+                "Sandboxed App Cache",
+                CacheCategory.CONTAINER,
+                "Library/Containers/*/Data/Library/Caches",
+                True,
+            ),
+            (
+                "Group Container Cache",
+                CacheCategory.CONTAINER,
+                "Library/Group Containers/*/Caches",
+                True,
+            ),
+            (
+                "Group Container Cache",
+                CacheCategory.CONTAINER,
+                "Library/Group Containers/*/Library/Caches",
+                True,
+            ),
+        ]
+        for name, category, pattern, delete_contents_only in patterns:
+            for path in self._expand_candidate_paths(pattern):
+                bundle_root = path
+                candidates.append((name, category, bundle_root, delete_contents_only))
+        return candidates
+
+    def _darwin_user_cache_paths(self) -> list[tuple[str, CacheCategory, Path, bool]]:
+        if self.os_type != "darwin":
+            return []
+
+        candidates: list[tuple[str, CacheCategory, Path, bool]] = []
+        for key, label in (("DARWIN_USER_CACHE_DIR", "Darwin User Cache"),):
+            try:
+                result = subprocess.run(
+                    ["getconf", key], capture_output=True, text=True, check=True
+                )
+            except (OSError, subprocess.CalledProcessError):
+                continue
+
+            value = result.stdout.strip()
+            if not value:
+                continue
+            path = Path(value)
+            try:
+                if path.exists() and path.is_dir() and not path.is_symlink():
+                    candidates.append((label, CacheCategory.SYSTEM, path, True))
+            except OSError:
+                continue
+
+        return candidates
+
+    def _extra_candidates(self) -> list[tuple[str, CacheCategory, Path, bool]]:
+        if self.os_type != "darwin":
+            return []
+
+        extra: list[tuple[str, CacheCategory, Path, bool]] = []
+        for name, rel_path, delete_contents_only in [
+            (
+                "WebKit Networking Cache",
+                "Library/Caches/com.apple.WebKit.Networking",
+                False,
+            ),
+            ("Quick Look Cache", "Library/Caches/Quick Look", False),
+            (
+                "QuickLook Thumbnail Cache",
+                "Library/Caches/com.apple.QuickLook.thumbnailcache",
+                False,
+            ),
+            ("Icon Services Cache", "Library/Caches/com.apple.iconservices*", False),
+            ("Apple ID Cache", "Library/Caches/com.apple.akd", False),
+            ("Photo Analysis Cache", "Library/Caches/com.apple.photoanalysisd", False),
+        ]:
+            for path in self._expand_candidate_paths(rel_path):
+                extra.append((name, CacheCategory.SYSTEM, path, delete_contents_only))
+
+        extra.extend(self._expand_browser_cache_paths())
+        extra.extend(self._expand_container_cache_paths())
+        extra.extend(self._darwin_user_cache_paths())
+        return extra
+
     def scan(
         self,
         progress_callback: Callable[[int, str], None] | None = None,
@@ -750,56 +682,55 @@ class CacheScanner:
         min_size_bytes = min_size_mb * 1024 * 1024
         found_paths: set[Path] = set()  # Track to avoid duplicates
 
+        def add_candidate(
+            name: str,
+            category: CacheCategory,
+            path: Path,
+            delete_contents_only: bool = False,
+        ) -> None:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                return
+
+            if resolved in found_paths:
+                return
+            if not resolved.exists() or not resolved.is_dir() or resolved.is_symlink():
+                return
+
+            found_paths.add(resolved)
+            size, file_count, last_modified = self._get_directory_stats(resolved)
+            if size < min_size_bytes:
+                return
+
+            is_xcode = name.startswith("Xcode") or name.startswith("CoreSimulator")
+            cache = CacheLocation(
+                path=resolved,
+                name=name,
+                category=category,
+                size=size,
+                file_count=file_count,
+                last_modified=last_modified,
+                is_xcode=is_xcode,
+                delete_contents_only=delete_contents_only,
+            )
+            results.caches.append(cache)
+            if progress_callback:
+                progress_callback(len(results.caches), name)
+
         for name, category, paths_by_os in self.CACHE_DEFINITIONS:
             os_paths = paths_by_os.get(self.os_type, [])
 
             for rel_path in os_paths:
                 try:
-                    # Handle absolute paths (like /var/lib/docker)
-                    if rel_path.startswith("/"):
-                        path = Path(rel_path)
-                    else:
-                        path = self.home / rel_path
-
-                    # Skip if already processed or doesn't exist
-                    if path in found_paths or not path.exists():
-                        continue
-
-                    # Skip if not a directory
-                    if not path.is_dir():
-                        continue
-
-                    found_paths.add(path)
-
-                    # Get directory stats
-                    size, file_count, last_modified = self._get_directory_stats(path)
-
-                    # Skip if below minimum size
-                    if size < min_size_bytes:
-                        continue
-
-                    # Determine if this is an Xcode-related cache
-                    is_xcode = name.startswith("Xcode") or name.startswith(
-                        "CoreSimulator"
-                    )
-
-                    cache = CacheLocation(
-                        path=path,
-                        name=name,
-                        category=category,
-                        size=size,
-                        file_count=file_count,
-                        last_modified=last_modified,
-                        is_xcode=is_xcode,
-                    )
-                    results.caches.append(cache)
-
-                    if progress_callback:
-                        progress_callback(len(results.caches), name)
-
+                    for path in self._expand_candidate_paths(rel_path):
+                        add_candidate(name, category, path)
                 except (OSError, PermissionError) as e:
                     results.scan_errors.append(f"{rel_path}: {e}")
                     continue
+
+        for name, category, path, delete_contents_only in self._extra_candidates():
+            add_candidate(name, category, path, delete_contents_only)
 
         # Sort by size (largest first)
         results.caches.sort(key=lambda c: c.size, reverse=True)

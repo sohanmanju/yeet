@@ -191,6 +191,156 @@ class TestCacheScanner:
 
         assert callback_calls == [(1, "Temp Cache")]
 
+    def test_expand_candidate_paths_supports_globs(self, tmp_path):
+        cache_dir = tmp_path / "Library" / "Caches" / "com.apple.iconservices.store"
+        cache_dir.mkdir(parents=True)
+
+        scanner = CacheScanner()
+        scanner.home = tmp_path
+
+        paths = scanner._expand_candidate_paths(
+            "Library/Caches/com.apple.iconservices*"
+        )
+
+        assert paths == [cache_dir]
+
+    def test_scan_marks_contents_only_candidates(self, tmp_path):
+        cache_dir = (
+            tmp_path
+            / "Library"
+            / "Containers"
+            / "com.example.app"
+            / "Data"
+            / "Library"
+            / "Caches"
+        )
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "cache.bin").write_bytes(b"x" * 2048)
+
+        scanner = CacheScanner()
+        scanner.home = tmp_path
+        scanner.os_type = "darwin"
+        scanner.CACHE_DEFINITIONS = []
+        scanner._extra_candidates = lambda: [
+            ("Sandboxed App Cache", CacheCategory.CONTAINER, cache_dir, True)
+        ]
+
+        results = scanner.scan(min_size_mb=0)
+
+        assert len(results.caches) == 1
+        assert results.caches[0].path == cache_dir
+        assert results.caches[0].delete_contents_only is True
+
+    def test_cache_definitions_exclude_non_cache_paths(self):
+        scanner = CacheScanner()
+        all_paths = {
+            path
+            for _, _, paths_by_os in scanner.CACHE_DEFINITIONS
+            for paths in paths_by_os.values()
+            for path in paths
+        }
+
+        disallowed_paths = {
+            "Library/Safari/LocalStorage",
+            "Library/Developer/Xcode/Archives",
+            "Library/Developer/Xcode/iOS DeviceSupport",
+            "Library/Developer/Xcode/watchOS DeviceSupport",
+            "Library/Developer/CoreSimulator/Devices",
+            ".android/avd",
+            "Library/Containers/com.docker.docker/Data/vms",
+            ".colima",
+            ".local/share/containers",
+            "/var/lib/containers",
+            "AppData/Local/Docker/wsl",
+            ".vscode/extensions",
+            "Library/Logs",
+            ".local/share/logs",
+            "/var/log",
+            ".Trash",
+            ".local/share/Trash",
+            "$Recycle.Bin",
+            ".local/share/pnpm/store",
+            "Library/pnpm/store",
+            ".cargo/registry",
+            ".cargo/git",
+            ".m2/repository",
+            ".nuget/packages",
+            ".pub-cache",
+            ".pyenv/versions",
+            ".rbenv/versions",
+            ".nvm/versions",
+            "Library/Application Support/fnm/node-versions",
+            ".local/share/fnm/node-versions",
+            ".rustup/toolchains",
+            ".sdkman/candidates",
+            "Library/Application Support/JetBrains",
+            "Library/Application Support/Zed/languages",
+            "Library/Safari/LocalStorage",
+        }
+
+        assert disallowed_paths.isdisjoint(all_paths)
+
+    def test_darwin_user_cache_paths_only_queries_cache_dir(
+        self, monkeypatch, tmp_path
+    ):
+        cache_dir = tmp_path / "darwin-cache"
+        cache_dir.mkdir()
+
+        calls: list[list[str]] = []
+
+        class Result:
+            stdout = f"{cache_dir}\n"
+
+        def fake_run(cmd, capture_output, text, check):
+            calls.append(cmd)
+            assert cmd == ["getconf", "DARWIN_USER_CACHE_DIR"]
+            return Result()
+
+        scanner = CacheScanner()
+        scanner.os_type = "darwin"
+        monkeypatch.setattr("yeet.scanners.cache.subprocess.run", fake_run)
+
+        results = scanner._darwin_user_cache_paths()
+
+        assert calls == [["getconf", "DARWIN_USER_CACHE_DIR"]]
+        assert results == [("Darwin User Cache", CacheCategory.SYSTEM, cache_dir, True)]
+
+    def test_container_cache_paths_skip_tmp_candidates(self, tmp_path):
+        app_cache = (
+            tmp_path
+            / "Library"
+            / "Containers"
+            / "com.example.app"
+            / "Data"
+            / "Library"
+            / "Caches"
+        )
+        app_tmp = (
+            tmp_path / "Library" / "Containers" / "com.example.app" / "Data" / "tmp"
+        )
+        group_cache = (
+            tmp_path / "Library" / "Group Containers" / "group.com.example" / "Caches"
+        )
+        group_tmp = (
+            tmp_path / "Library" / "Group Containers" / "group.com.example" / "tmp"
+        )
+        app_cache.mkdir(parents=True)
+        app_tmp.mkdir(parents=True)
+        group_cache.mkdir(parents=True)
+        group_tmp.mkdir(parents=True)
+
+        scanner = CacheScanner()
+        scanner.home = tmp_path
+        scanner.os_type = "darwin"
+
+        candidates = scanner._expand_container_cache_paths()
+        paths = {path for _, _, path, _ in candidates}
+
+        assert app_cache in paths
+        assert group_cache in paths
+        assert app_tmp not in paths
+        assert group_tmp not in paths
+
 
 class TestDiskExplorer:
     """Tests for DiskExplorer class."""

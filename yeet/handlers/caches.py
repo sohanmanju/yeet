@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import platform
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
@@ -71,16 +72,52 @@ def perform_cache_deletions(
 
         for cache in caches:
             progress.update(task, description=f"{action_word}: {cache.name}")
-            success, msg = delete_item(
-                cache.path,
-                use_trash,
-                dry_run=dry_run,
-                config=config,
-            )
+            if cache.delete_contents_only and cache.path.is_dir():
+                success, msg = _delete_cache_contents(
+                    cache.path,
+                    use_trash=use_trash,
+                    dry_run=dry_run,
+                    config=config,
+                )
+            else:
+                success, msg = delete_item(
+                    cache.path,
+                    use_trash,
+                    dry_run=dry_run,
+                    config=config,
+                )
             results.append((cache, success, msg))
             progress.advance(task)
 
     return results
+
+
+def _delete_cache_contents(
+    path: Path,
+    *,
+    use_trash: bool,
+    dry_run: bool,
+    config,
+) -> tuple[bool, str]:
+    """Delete the contents of a cache directory without removing the parent."""
+    if not path.exists():
+        return True, f"Cache directory missing, skipped: {path}"
+    if not path.is_dir():
+        return delete_item(path, use_trash, dry_run=dry_run, config=config)
+
+    children = [child for child in sorted(path.iterdir()) if child.exists()]
+    if not children:
+        return True, f"Cache directory empty: {path}"
+
+    deleted = 0
+    for child in children:
+        success, msg = delete_item(child, use_trash, dry_run=dry_run, config=config)
+        if not success:
+            return False, msg
+        deleted += 1
+
+    action = "Would clear contents" if dry_run else "Cleared contents"
+    return True, f"{action}: {path} ({deleted} items)"
 
 
 def confirm_cache_deletion(

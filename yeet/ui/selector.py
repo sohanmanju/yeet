@@ -358,7 +358,7 @@ class DeletionItemSelector:
             f"{name:<{w['name']}} "
             f"{parent:<{w['path']}} "
             f"{file.size_formatted:>{w['size']}} "
-            f"{file.extension:^{w['ext']}} "
+            f"{self._get_type_label(file):^{w['ext']}} "
             f"{format_days_ago(file.days_since_modified):>{w['modified']}}"
         )
 
@@ -373,6 +373,29 @@ class DeletionItemSelector:
             style = "class:normal"
 
         return FormattedText([(style, row)])
+
+    def _get_type_label(self, file: SelectableItem) -> str:
+        """Return the best available type label for the row."""
+        extension = getattr(file, "extension", None)
+        if extension:
+            return extension
+
+        item_type = getattr(file, "item_type", None)
+        if item_type is not None:
+            value = getattr(item_type, "value", None)
+            if value:
+                return value
+            return str(item_type)
+
+        app_hint = getattr(file, "app_hint", None)
+        if app_hint:
+            return app_hint
+
+        source = getattr(file, "source", None)
+        if source:
+            return source
+
+        return "—"
 
     def _get_content(self) -> FormattedText:
         """Generate the full table content."""

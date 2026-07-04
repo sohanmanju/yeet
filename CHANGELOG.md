@@ -5,6 +5,21 @@ All notable changes to yeet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-04
+
+### Fixed
+- Narrowed cache cleanup to true cache-only targets
+- Removed broad app-data, log, trash, temp, runtime-version, and package-store paths from `caches`
+- Fixed cache selector regressions for items without file-only attributes
+
+### Improved
+- Workflow menu now uses arrow-only selection
+- Safer contents-only deletion for shared cache roots
+- Added regression coverage for cache exclusions and selector behavior
+
+### Added
+- Snyk security scan in GitHub Actions
+
 ## [0.3.0] - 2026-06-28
 
 ### Added

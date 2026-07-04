@@ -442,6 +442,7 @@ class CacheLocation:
     file_count: int
     last_modified: datetime
     is_xcode: bool = False  # Flag to mark Xcode-related caches
+    delete_contents_only: bool = False
 
     @property
     def size_formatted(self) -> str:

@@ -1,10 +1,16 @@
 """Tests for safety and history helpers."""
 
+from io import StringIO
 from pathlib import Path
+
+from rich.console import Console
 
 from yeet.config import Config
 from yeet.history import make_history_entry, read_history, write_history_entry
+from yeet.handlers.caches import perform_cache_deletions
 from yeet.handlers.common import delete_item
+from yeet.utils import CacheCategory, CacheLocation
+from datetime import datetime
 from yeet.safety import is_protected_path
 
 
@@ -83,3 +89,36 @@ def test_history_limit(tmp_path):
 
     entries = read_history(path=history_file, limit=2)
     assert [entry["workflow"] for entry in entries] == ["run-1", "run-2"]
+
+
+def test_contents_only_cache_deletion_keeps_parent(tmp_path):
+    cache_dir = Path.cwd() / ".tmp-container-cache"
+    cache_dir.mkdir()
+    child = cache_dir / "cache.bin"
+    child.write_text("hello")
+
+    cache = CacheLocation(
+        path=cache_dir,
+        name="Sandboxed App Cache",
+        category=CacheCategory.CONTAINER,
+        size=child.stat().st_size,
+        file_count=1,
+        last_modified=datetime.now(),
+        delete_contents_only=True,
+    )
+
+    console = Console(file=StringIO(), force_terminal=False, color_system=None)
+    try:
+        results = perform_cache_deletions(
+            console, [cache], use_trash=False, dry_run=False
+        )
+
+        assert results[0][0] == cache
+        assert results[0][1] is True
+        assert cache_dir.exists()
+        assert not child.exists()
+    finally:
+        if child.exists():
+            child.unlink()
+        if cache_dir.exists():
+            cache_dir.rmdir()

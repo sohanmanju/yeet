@@ -71,6 +71,7 @@ def cache_location_to_dict(cache: CacheLocation) -> dict:
         "last_modified": _dt(cache.last_modified),
         "days_since_modified": cache.days_since_modified,
         "is_xcode": cache.is_xcode,
+        "delete_contents_only": cache.delete_contents_only,
     }
 
 

@@ -1,8 +1,12 @@
 """Tests for yeet.main."""
 
+from io import StringIO
 import sys
 
-from yeet.main import parse_args
+from rich.console import Console
+
+import yeet.main as main
+from yeet.main import Workflow, parse_args, show_main_menu
 
 
 def test_parse_args_supports_json(monkeypatch):
@@ -45,3 +49,34 @@ def test_parse_args_supports_history_flag(monkeypatch):
     args = parse_args()
 
     assert args.history is True
+
+
+def test_show_main_menu_builds_arrow_options(monkeypatch):
+    workflows = [
+        Workflow("projects", "Stale Projects", "Find old projects", lambda *_: None),
+        Workflow("purge", "Project Artifacts", "Remove build outputs", lambda *_: None),
+    ]
+
+    captured: dict[str, object] = {}
+
+    class FakeMenu:
+        def __init__(self, options, title):
+            captured["options"] = options
+            captured["title"] = title
+
+        def run(self):
+            return "purge"
+
+    monkeypatch.setattr(main, "_available_workflows", lambda: workflows)
+    monkeypatch.setattr(main, "WorkflowMenu", FakeMenu)
+
+    choice = show_main_menu(Console(file=StringIO()))
+
+    assert choice == "purge"
+    assert captured["title"] == "What would you like to clean up?"
+    assert [option.key for option in captured["options"]] == [
+        "projects",
+        "purge",
+        "quit",
+    ]
+    assert all(not hasattr(option, "shortcut") for option in captured["options"])

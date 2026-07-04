@@ -12,6 +12,7 @@ from rich.text import Text
 
 from . import __version__
 from .utils import is_macos
+from .ui.menu import WorkflowMenu, build_workflow_menu_options
 from .ui.prompts import confirm_continue
 from .handlers import (
     handle_stale_projects,
@@ -136,54 +137,13 @@ def show_welcome(console: Console) -> None:
 
 
 def show_main_menu(console: Console) -> str:
-    """
-    Display main menu and get user choice.
-
-    Returns:
-        "projects", "files", "caches", "purge", "installer", "leftovers", "xcode", "explore", "history", or "quit"
-    """
-    from prompt_toolkit import prompt
-    from prompt_toolkit.styles import Style
-
+    """Display the arrow-navigable main menu and return the selected workflow."""
     workflows = _available_workflows()
-    choice_map = {
-        str(idx): workflow.key for idx, workflow in enumerate(workflows, start=1)
-    }
-    choice_map.update({workflow.key: workflow.key for workflow in workflows})
-    choice_map.update(
-        {alias: workflow.key for workflow in workflows for alias in workflow.aliases}
+    menu_options = build_workflow_menu_options(
+        (workflow.key, workflow.label, workflow.description) for workflow in workflows
     )
-    choice_map.update({"q": "quit", "quit": "quit", "exit": "quit", "": "quit"})
-
-    console.print()
-    console.print("[bold]What would you like to clean up?[/]\n")
-    for idx, workflow in enumerate(workflows, start=1):
-        console.print(
-            f"  [cyan][{idx}][/] [bold]{workflow.label}[/]  - {workflow.description}"
-        )
-    console.print("  [cyan][q][/] [bold]Quit[/]")
-    console.print()
-
-    while True:
-        try:
-            prompt_text = f"Enter choice ({'/'.join(str(i) for i in range(1, len(workflows) + 1))}/q): "
-            choice = (
-                prompt(
-                    prompt_text,
-                    style=Style.from_dict({"": "cyan bold"}),
-                )
-                .strip()
-                .lower()
-            )
-
-            selected = choice_map.get(choice)
-            if selected is not None:
-                return selected
-            else:
-                valid_choices = f"1 through {len(workflows)}, or q"
-                console.print(f"[red]Invalid choice. Please enter {valid_choices}[/]")
-        except (EOFError, KeyboardInterrupt):
-            return "quit"
+    menu = WorkflowMenu(menu_options, title="What would you like to clean up?")
+    return menu.run()
 
 
 def parse_args() -> argparse.Namespace:
