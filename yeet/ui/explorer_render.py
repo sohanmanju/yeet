@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from math import ceil
+
 from prompt_toolkit.formatted_text import FormattedText
 
 from ..utils import SIZE_LOADING, DiskItem, format_days_ago, format_size
-from .geometry import content_width, single_line
-from .meter import MUTED, PALETTE, Segment, dot_meter, legend
+from .chrome import key_hints, screen_title
+from .geometry import content_width, fit, single_line, terminal_size
+from .meter import MUTED, Segment, dot_meter, legend
 from .responsive import table_line
+from .storage_groups import storage_group, storage_segments
 from .table_schemas import EXPLORER, EXTENSIONS
 from .view import ScreenView
 
@@ -19,7 +23,7 @@ def get_breadcrumbs(ui, max_width: int = 70) -> FormattedText:
         return FormattedText([("class:breadcrumb", "/")])
 
     crumbs: list[tuple[str, str]] = []
-    separator = " > "
+    separator = " / "
     full_path = separator.join(parts)
 
     if len(full_path) > max_width and len(parts) > 3:
@@ -94,10 +98,12 @@ def get_header(ui) -> FormattedText:
     return FormattedText([("class:header", table_line(EXPLORER))])
 
 
-def get_row(ui, idx: int, display_items: list[DiskItem]) -> FormattedText:
+def get_row(
+    ui, idx: int, display_items: list[DiskItem], *, parent_total: int | None = None
+) -> FormattedText:
     item = display_items[idx]
     selected, cursor = item.path in ui.selected, idx == ui.cursor
-    total = get_parent_total_size(ui) or 0
+    total = parent_total if parent_total is not None else (get_parent_total_size(ui) or 0)
     fraction = min(1, max(0, item.size) / total) if total else 0
     lit = round(fraction * 8)
     row = table_line(
@@ -218,36 +224,43 @@ def get_help_content(ui) -> ScreenView:
 
 def get_storage_overview(ui) -> FormattedText:
     """Show measured children, retaining unmeasured space while sizes load."""
-    known = sorted(
-        (item for item in ui.items if item.size > 0),
-        key=lambda item: (-item.size, str(item.path)),
-    )
-    measured = sum(item.size for item in known)
+    segments = storage_segments(ui.items)
+    measured = sum(segment.size for segment in segments)
     cached = ui.explorer.get_cached_size(ui.current_path)
     total = max(measured, cached or 0)
-    segments = [
-        Segment(item.name, item.size, PALETTE[index])
-        for index, item in enumerate(known[:5])
-    ]
-    other = sum(item.size for item in known[5:])
-    if other:
-        segments.append(Segment("Other", other, PALETTE[5]))
-    if total > measured:
-        segments.append(Segment("Unmeasured", total - measured, MUTED))
     loading = sum(item.is_loading for item in ui.items)
+    pending = loading + ui.pending_entries
+    if cached is not None and total > measured:
+        segments.append(Segment("Unmeasured", total - measured, MUTED, id="unmeasured"))
     status = (
         f"Measuring {loading} {'folder' if loading == 1 else 'folders'}"
         if loading
         else "Measured children"
     )
-    lines = [("class:help", f"  {status} · {format_size(measured)}\n")]
+    if ui.listing:
+        status = "Reading directory"
+    lines = [("class:help", f"  {status} · {format_size(measured)} measured\n")]
+    if pending and not cached:
+        # There is no honest byte percentage without a parent total. Reveal the
+        # measured category distribution by completed-item count instead, and
+        # label that different meaning explicitly. Never invent unknown bytes.
+        completed = len(ui.items) - loading
+        count = len(ui.items) + ui.pending_entries
+        progress = completed / count
+        total = ceil(measured / progress) if progress else 0
+        lines.append(
+            (
+                "class:dim",
+                f"  {completed}/{count} items measured · bar: item progress\n",
+            )
+        )
     visible = ui._get_display_items()
     current = visible[ui.cursor] if visible and ui.cursor < len(visible) else None
     focus = next(
         (
             i
-            for i, item in enumerate(known[:5])
-            if current and item.path == current.path
+            for i, segment in enumerate(segments)
+            if current and segment.id == storage_group(current)
         ),
         None,
     )
@@ -255,8 +268,8 @@ def get_storage_overview(ui) -> FormattedText:
         dot_meter(
             segments,
             total,
-            focus=focus if not loading else None,
-            scanning=bool(loading),
+            focus=focus if not (loading or ui.listing) else None,
+            scanning=bool(loading or ui.listing),
             context=str(ui.current_path),
         )
     )
@@ -280,6 +293,7 @@ def get_content(ui) -> ScreenView:
     measured = sum(max(0, item.size) for item in ui.items)
     size = format_size(cached) if cached is not None else "~" + format_size(measured)
     header = [
+        *screen_title("Explore disk"),
         ("", "  "),
         *get_breadcrumbs(ui, max_width=max(10, content_width() - len(size) - 3)),
         ("class:path-size", f" ({size})\n"),
@@ -290,7 +304,6 @@ def get_content(ui) -> ScreenView:
             ("", "  "),
             *get_header(ui),
             ("", "\n"),
-            ("class:header", "  " + "─" * content_width() + "\n"),
         ]
     )
     footer = []
@@ -307,12 +320,24 @@ def get_content(ui) -> ScreenView:
             f"  Selected: {len(ui.selected)} items ({format_size(selected_size)})\n",
         )
     )
-    hints = (
-        "q quit · Enter open · Space select"
-        if content_width() < 65
-        else "j/k move · Enter open · h back · Space select · d delete · ? help · q quit"
-    )
-    footer.append(("class:help", "  " + hints + "\n"))
+    if items and not ui.show_info_panel and terminal_size().rows >= 20:
+        focused = items[min(ui.cursor, len(items) - 1)]
+        footer.append(
+            (
+                "class:detail",
+                "  " + fit(str(focused.path), content_width()).rstrip() + "\n",
+            )
+        )
+    hints = [
+        ("Enter", "open"),
+        ("Space", "select"),
+        ("?", "help"),
+        ("q", "quit"),
+        ("h", "back"),
+    ]
+    if ui.selected:
+        hints.insert(0, ("d", "review deletion"))
+    footer.extend(key_hints(hints))
     if ui.status_message:
         footer.append(("class:status", f"  {single_line(ui.status_message)}\n"))
     if ui.filtered_items is not None or ui.age_filter_days is not None:
@@ -327,29 +352,27 @@ def get_content(ui) -> ScreenView:
     if ui.show_info_panel and items:
         footer.append(("class:info-header", "  Item info\n"))
         footer.extend(get_item_info(ui, items[min(ui.cursor, len(items) - 1)]))
-    if not ui.show_small_items:
-        footer.append(
-            (
-                "class:hint",
-                f"  Hiding < {format_size(ui.explorer.min_size_bytes)} · t show all\n",
-            )
-        )
     if ui.bookmarks:
         names = ", ".join(path.name or "/" for path in ui.bookmarks[:4])
         footer.append(("class:bookmark-hint", f"  Bookmarks: {names} · b next\n"))
-    footer.append(
-        ("class:dim", f"  Sort: {ui.sort_mode} · s change · r refresh · ? help\n")
-    )
+    scope = f"{len(items)} items · sort: {ui.sort_mode} · s change · r refresh"
+    if not ui.show_small_items:
+        scope += f" · hiding < {format_size(ui.explorer.min_size_bytes)} · t show all"
+    footer.append(("class:dim", "  " + fit(scope, content_width()).rstrip() + "\n"))
 
     def row(index):
         if not items:
             message = (
-                "No items match filter"
+                "Reading directory…"
+                if ui.listing
+                else "No items match filter"
                 if ui.filtered_items is not None
                 else "No visible items"
             )
             return FormattedText([("class:dim", "  " + message)])
-        return FormattedText([("", "  "), *get_row(ui, index, items)])
+        return FormattedText(
+            [("", "  "), *get_row(ui, index, items, parent_total=measured)]
+        )
 
     return ScreenView(
         FormattedText(header), max(1, len(items)), row, FormattedText(footer), ui.cursor

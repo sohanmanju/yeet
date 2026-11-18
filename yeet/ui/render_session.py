@@ -192,7 +192,8 @@ class TerminalSession:
             elapsed = monotonic() - started
             # Keep idle animation from consuming a core on large/HiDPI terminals.
             interval = max(
-                0.016 if frame.moving else 0.096, elapsed * (2 if frame.moving else 4)
+                0.016 if frame.moving else 0.25,
+                elapsed * 1.15,
             )
             try:
                 await asyncio.wait_for(

@@ -8,12 +8,25 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 
 WHITE = (255, 255, 255)
 BAR_ROWS = 7
 HEADROOM_ROWS = 3
+
+
+@lru_cache(maxsize=65536)
+def _straight_pixel(pixel: int) -> int:
+    """Repeated dot/wash pixels share their straight-alpha conversion."""
+    alpha = pixel >> 24
+    return (
+        min(255, (pixel & 255) * 255 // alpha)
+        | min(255, ((pixel >> 8) & 255) * 255 // alpha) << 8
+        | min(255, ((pixel >> 16) & 255) * 255 // alpha) << 16
+        | alpha << 24
+    )
 
 
 def dot_hash(a: int, b: int) -> float:
@@ -178,10 +191,9 @@ class BarCanvas:
         i = (y * self.width + x) * 4
         alpha = min(1, alpha)
         b = self.buffer
-        for channel in range(3):
-            b[i + channel] = int(
-                b[i + channel] + (color[channel] - b[i + channel]) * alpha
-            )
+        b[i] = int(b[i] + (color[0] - b[i]) * alpha)
+        b[i + 1] = int(b[i + 1] + (color[1] - b[i + 1]) * alpha)
+        b[i + 2] = int(b[i + 2] + (color[2] - b[i + 2]) * alpha)
         if self.transparent:
             b[i + 3] = min(255, math.floor(b[i + 3] + (255 - b[i + 3]) * alpha + 0.5))
 
@@ -232,6 +244,13 @@ class BarCanvas:
         if not self.transparent:
             return self.buffer
         result = bytearray(self.buffer)
+        if sys.byteorder == "little":
+            pixels = memoryview(result).cast("I")
+            convert = _straight_pixel
+            for i, pixel in enumerate(pixels):
+                if 0 < pixel >> 24 < 255:
+                    pixels[i] = convert(pixel)
+            return result
         for i in range(0, len(result), 4):
             alpha = result[i + 3]
             if 0 < alpha < 255:

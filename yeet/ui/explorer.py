@@ -93,6 +93,9 @@ class DiskExplorerUI:
         # For lazy loading
         self._loading_thread: threading.Thread | None = None
         self._stop_loading = threading.Event()
+        self._scan_generation = 0
+        self.listing = False
+        self.pending_entries = 0
 
         # Filter state
         self.filter_mode: bool = False
@@ -127,9 +130,62 @@ class DiskExplorerUI:
 
     def _scan_current_directory(self) -> None:
         """Scan the current directory and update items list."""
+        self._stop_loading.set()
+        self._scan_generation += 1
+        generation = self._scan_generation
+        app = self._app
+        if app is not None and app.loop is not None:
+            stop_event = self._stop_loading = threading.Event()
+            path = self.current_path
+            loop = app.loop
+            self.items = []
+            self.filtered_items = None
+            self.listing = True
+            self.pending_entries = 0
+
+            def apply_batch(items, pending):
+                if generation != self._scan_generation or stop_event.is_set():
+                    return
+                visible = self._get_display_items()
+                focused = (
+                    visible[self.cursor].path if self.cursor < len(visible) else None
+                )
+                self.items = items
+                self.listing = pending > 0
+                self.pending_entries = pending
+                self._sort_items()
+                self._apply_filter()
+                visible = self._get_display_items()
+                self.cursor = next(
+                    (i for i, item in enumerate(visible) if item.path == focused),
+                    min(self.cursor, max(0, len(visible) - 1)),
+                )
+                if not pending:
+                    self._start_lazy_loading()
+                app.invalidate()
+
+            def on_update(items, pending):
+                if stop_event.is_set():
+                    return
+                try:
+                    loop.call_soon_threadsafe(apply_batch, items, pending)
+                except RuntimeError:
+                    # The application may have exited while stat was in flight.
+                    pass
+
+            def read_directory():
+                self.explorer.scan_directory(
+                    path, include_small=True, on_update=on_update, stop_event=stop_event
+                )
+
+            self._loading_thread = threading.Thread(target=read_directory, daemon=True)
+            self._loading_thread.start()
+            return
+
         self.items = self.explorer.scan_directory(
             self.current_path,
-            include_small=self.show_small_items,
+            # The meter inventories all children; size filtering belongs to the list.
+            include_small=True,
         )
         self._sort_items()
 
@@ -205,7 +261,14 @@ class DiskExplorerUI:
 
     def _get_display_items(self) -> list[DiskItem]:
         """Get the items to display (filtered by name and/or age, or all)."""
-        return self.filtered_items if self.filtered_items is not None else self.items
+        items = self.filtered_items if self.filtered_items is not None else self.items
+        if self.show_small_items:
+            return items
+        return [
+            item
+            for item in items
+            if item.is_loading or item.size >= self.explorer.min_size_bytes
+        ]
 
     def _is_bookmarked(self, path: Path) -> bool:
         return any(path == bookmark for bookmark in self.bookmarks)
@@ -245,10 +308,9 @@ class DiskExplorerUI:
         """Start background thread to calculate directory sizes using parallel scanning."""
         # Stop any existing loading
         self._stop_loading.set()
-        if self._loading_thread and self._loading_thread.is_alive():
-            self._loading_thread.join(timeout=0.5)
-
-        self._stop_loading.clear()
+        # Each scan owns its cancellation flag. Reusing and clearing the old
+        # event lets stale workers update a new directory; joining blocks keys.
+        stop_event = self._stop_loading = threading.Event()
 
         # Find items that need size calculation
         items_to_load = [
@@ -286,21 +348,49 @@ class DiskExplorerUI:
             priority_paths = [item.path for item in visible_items]
 
             def on_size_calculated(path: Path, size: int):
-                # Check if we should stop
-                if self._stop_loading.is_set():
+                if stop_event.is_set():
                     return
-                # Find and update the item
-                if path in path_to_item:
-                    path_to_item[path].size = size
-                    # Trigger UI refresh
-                    if self._app is not None:
-                        self._app.invalidate()
+
+                def apply_size():
+                    if stop_event.is_set():
+                        return
+                    if path in path_to_item:
+                        visible = self._get_display_items()
+                        focused = (
+                            visible[self.cursor].path
+                            if self.cursor < len(visible)
+                            else None
+                        )
+                        path_to_item[path].size = size
+                        self._sort_items()
+                        # Resort progressively, keeping focus on the same path.
+                        visible = self._get_display_items()
+                        self.cursor = next(
+                            (
+                                i
+                                for i, item in enumerate(visible)
+                                if item.path == focused
+                            ),
+                            min(self.cursor, max(0, len(visible) - 1)),
+                        )
+                        if self._app is not None:
+                            self._app.invalidate()
+
+                app = self._app
+                if app is not None and app.loop is not None:
+                    try:
+                        app.loop.call_soon_threadsafe(apply_size)
+                    except RuntimeError:
+                        # The loop may close between completion and dispatch.
+                        pass
+                else:
+                    apply_size()
 
             self.explorer.calculate_sizes_prioritized(
                 paths=paths,
                 priority_paths=priority_paths,
                 callback=on_size_calculated,
-                stop_event=self._stop_loading,
+                stop_event=stop_event,
             )
 
         self._loading_thread = threading.Thread(target=load_sizes, daemon=True)
@@ -417,9 +507,6 @@ class DiskExplorerUI:
         Returns:
             Set of paths selected for deletion, or empty set if cancelled.
         """
-        # Initial scan
-        self._scan_current_directory()
-
         # Key bindings
         kb = KeyBindings()
 
@@ -839,16 +926,17 @@ class DiskExplorerUI:
             full_screen=True,
             mouse_support=True,
         )
+        self._app.pre_run_callables.append(self._scan_current_directory)
 
         # Run
-        result = self._app.run()
-
-        # Stop any background loading and kill active processes
-        self._stop_loading.set()
-        self.explorer.kill_active_processes()
-
-        # Clear app reference to break circular reference
-        self._app = None
+        try:
+            result = self._app.run()
+        finally:
+            # Also discard callbacks queued just before an exceptional exit.
+            self._stop_loading.set()
+            self._scan_generation += 1
+            self.explorer.kill_active_processes()
+            self._app = None
 
         if result == "delete":
             return self.selected

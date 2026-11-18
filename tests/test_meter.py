@@ -63,6 +63,6 @@ def test_partial_scan_does_not_count_loading_as_data(tmp_path, monkeypatch):
     ui.filtered_items = []
     content = plain(get_storage_overview(ui))
     assert "Measuring 1 folder" in content
-    assert "Known 25 B" in content
+    assert "Folders 25 B" in content
     assert "Unmeasured 75 B" in content
     assert "Pending" not in content

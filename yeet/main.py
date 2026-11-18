@@ -4,39 +4,27 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from rich.console import Console
-from rich.text import Text
 
 from . import __version__
-from .utils import is_macos
-from .ui.menu import WorkflowMenu, build_workflow_menu_options
-from .ui.prompts import confirm_continue
 from .handlers import (
-    handle_stale_projects,
-    handle_large_files,
+    export_disk_scan,
     handle_cache_scan,
-    handle_purge,
-    handle_installer_cleanup,
-    handle_leftovers_cleanup,
-    handle_xcode_cleanup,
     handle_disk_explorer,
     handle_history,
-    export_disk_scan,
+    handle_installer_cleanup,
+    handle_large_files,
+    handle_leftovers_cleanup,
+    handle_purge,
+    handle_stale_projects,
+    handle_xcode_cleanup,
 )
-
-
-# ASCII art logo
-LOGO = """
-                        ██╗   ██╗███████╗███████╗████████╗
-                        ╚██╗ ██╔╝██╔════╝██╔════╝╚══██╔══╝
-                         ╚████╔╝ █████╗  █████╗     ██║   
-                          ╚██╔╝  ██╔══╝  ██╔══╝     ██║   
-                           ██║   ███████╗███████╗   ██║   
-                           ╚═╝   ╚══════╝╚══════╝   ╚═╝   
-"""
+from .ui.menu import WorkflowMenu, build_workflow_menu_options
+from .ui.prompts import confirm_continue
+from .utils import is_macos
 
 
 @dataclass(frozen=True)
@@ -130,10 +118,8 @@ def _dispatch_workflow(console: Console, args: argparse.Namespace, key: str) -> 
 
 
 def show_welcome(console: Console) -> None:
-    """Display the welcome screen with logo."""
-    console.print()
-    console.print(Text(LOGO, style="bold cyan"))
-    console.print(f"  [dim]v{__version__}[/] - [bold]Reclaim your disk space![/]\n")
+    """Display a compact welcome line before entering the full-screen UI."""
+    console.print(f"  [bold]yeet[/] [dim]v{__version__} · Reclaim your disk space[/]")
 
 
 def show_main_menu(console: Console) -> str:

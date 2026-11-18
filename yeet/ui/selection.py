@@ -12,7 +12,8 @@ from prompt_toolkit.styles import Style
 
 from ..utils import format_size
 from .application import TerminalApplication
-from .geometry import content_width, single_line
+from .chrome import key_hints, screen_title
+from .geometry import content_width, fit, single_line, terminal_size
 from .meter import THEME, ScanBreakdown
 from .responsive import TableSchema, table_line
 from .selection_model import SectionRow, SelectionRow, T
@@ -94,20 +95,19 @@ class SelectionEngine(Generic[T]):
         row = self.display_rows[position]
         if isinstance(row, SectionRow):
             return FormattedText(
-                [("class:section-header", f"  ── {single_line(row.title)} ──")]
+                [("class:section-header", f"  {single_line(row.title)}")]
             )
         return FormattedText([("", "  "), *self.render_item(row)])
 
     def _get_content(self) -> ScreenView:
         focused = self.rows[self.cursor] if self.rows else None
-        header = [("class:title", f"  {single_line(self.title)}\n")]
+        header = list(screen_title(self.title))
         header.extend(self.meter.render(focused.group if focused else None))
         header.extend(
             [
                 ("", "  "),
                 *self._get_header(),
                 ("", "\n"),
-                ("class:header", "  " + "─" * content_width() + "\n"),
             ]
         )
         size = sum(row.size for row in self.rows if row.index in self.selected)
@@ -117,12 +117,23 @@ class SelectionEngine(Generic[T]):
                 f"  Selected: {len(self.selected)} {self.noun} ({format_size(size)})\n",
             )
         ]
-        hints = (
-            "q back · Enter OK · Space select"
-            if content_width() < 65
-            else "j/k move · Space select · Enter confirm · a all · n none · q cancel"
-        )
-        footer.append(("class:help", "  " + hints + "\n"))
+        if focused and terminal_size().rows >= 20:
+            path = getattr(focused.value, "path", focused.name)
+            footer.append(
+                ("class:detail", "  " + fit(str(path), content_width()).rstrip() + "\n")
+            )
+        hints = [
+            ("Space", "select"),
+            ("Enter", "review"),
+            ("q", "cancel"),
+            ("↑↓", "move"),
+            ("a/n", "all/none"),
+        ]
+        if content_width() < 40:
+            hints = [("q", "back"), ("Enter", "review"), ("Space", "select")]
+        if self.open_item is not None:
+            hints.insert(3, ("o", "reveal"))
+        footer.extend(key_hints(hints))
         footer.append(
             (
                 "class:dim",
@@ -219,9 +230,8 @@ class SelectionEngine(Generic[T]):
             style=Style.from_dict(
                 {
                     **THEME,
-                    "section-header": "bold yellow",
-                    "latest": "dim cyan",
-                    "cursor-latest": "reverse cyan",
+                    "latest": "#8c8c8c",
+                    "cursor-latest": "bg:#262626 #22d3ee",
                 }
             ),
             color_depth=ColorDepth.TRUE_COLOR,

@@ -9,7 +9,7 @@ from shutil import disk_usage
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.formatted_text import FormattedText
 
-from ..utils import LeftoverItem, PurgeArtifact, SelectableItem, format_size
+from ..utils import DiskItem, LeftoverItem, PurgeArtifact, SelectableItem, format_size
 from .application import TerminalApplication
 from .geometry import content_width, fit, terminal_size
 from .meter_canvas import BarModel, CanvasSegment
@@ -21,6 +21,19 @@ GREEN = "#4ade80"
 
 # Applied after each screen's semantic styles to keep all interactive views cohesive.
 THEME = {
+    "brand": "bold #22d3ee",
+    "key": "#e6e6e6",
+    "dim": "#666666",
+    "detail": "#a3a3a3",
+    "status": "#22d3ee",
+    "menu-description": "#8c8c8c",
+    "menu-description-focus": "bg:#262626 #b5b5b5",
+    "section-header": "#8c8c8c",
+    "selection-hint": "#8c8c8c",
+    "breadcrumb": "#8c8c8c",
+    "breadcrumb-sep": "#525252",
+    "info-label": "#8c8c8c",
+    "info-value": "#d4d4d4",
     "title": "bold #e6e6e6",
     "header": "#8c8c8c",
     "help": "#8c8c8c",
@@ -40,6 +53,7 @@ class Segment:
     label: str
     size: int
     color: str
+    id: str | None = None
 
 
 def meter_width() -> int:
@@ -78,9 +92,13 @@ def dot_meter(
             budget -= size
             fraction = size / total if total > 0 and segment.color != MUTED else 0
             color = tuple(int(segment.color[i : i + 2], 16) for i in (1, 3, 5))
-            model_segments.append(CanvasSegment(str(index), color, fraction))
+            model_segments.append(
+                CanvasSegment(segment.id or str(index), color, fraction)
+            )
         model = BarModel(
-            tuple(model_segments), str(focus) if focus is not None else None, scanning
+            tuple(model_segments),
+            (segments[focus].id or str(focus)) if focus is not None else None,
+            scanning,
         )
         return app.session.meter(model, width, context)
     boundaries = []
@@ -144,11 +162,13 @@ def disk_overview(path: Path) -> FormattedText:
     except OSError:
         return FormattedText([("class:help", "  Disk capacity unavailable\n")])
     segments = [Segment("Used", usage.used, PALETTE[0])]
+    percent = round(usage.used / usage.total * 100) if usage.total else 0
     lines = [
-        (
-            "class:help",
-            f"  {format_size(usage.used)} used / {format_size(usage.total)} · {format_size(usage.free)} free\n",
-        )
+        ("class:footer", f"  {format_size(usage.free)}"),
+        ("class:help", " free"),
+        ("class:dim", "  ·  "),
+        ("class:normal", f"{format_size(usage.used)}"),
+        ("class:help", f" used of {format_size(usage.total)}  ·  {percent}% full\n"),
     ]
     lines.extend(dot_meter(segments, usage.total))
     lines.extend(legend([*segments, Segment("Free", usage.free, MUTED)]))
@@ -227,7 +247,7 @@ _EXTENSION_GROUP = {
 }
 
 
-def file_storage_group(item: SelectableItem | LeftoverItem) -> str:
+def file_storage_group(item: SelectableItem | LeftoverItem | DiskItem) -> str:
     """Use supplied app/project ownership, then file type; never guess an app."""
     if isinstance(item, LeftoverItem) and item.app_hint:
         return item.app_hint

@@ -8,12 +8,13 @@ import os
 import subprocess
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from time import monotonic
 
-from ..utils import DiskItem, SIZE_LOADING
+from ..utils import SIZE_LOADING, DiskItem
 
 
 class DiskExplorer:
@@ -93,6 +94,9 @@ class DiskExplorer:
         self,
         path: Path,
         include_small: bool = False,
+        *,
+        on_update: Callable[[list[DiskItem], int], None] | None = None,
+        stop_event: threading.Event | None = None,
     ) -> list[DiskItem]:
         """
         Scan a directory and return items sorted by size (largest first).
@@ -103,6 +107,9 @@ class DiskExplorer:
         Args:
             path: Directory to scan
             include_small: If True, include items below min_size_bytes
+            on_update: Optional batches and the number of directory entries
+                still to read. Called from the scanning thread.
+            stop_event: Stop enumeration when this scan is superseded.
 
         Returns:
             List of DiskItem sorted by size (largest first, loading items last)
@@ -114,7 +121,13 @@ class DiskExplorer:
 
         try:
             with os.scandir(path) as entries:
-                for entry in entries:
+                entries = list(entries)
+                if on_update is not None and entries:
+                    on_update([], len(entries))
+                last_update = monotonic()
+                for index, entry in enumerate(entries):
+                    if stop_event is not None and stop_event.is_set():
+                        return items
                     try:
                         if self._is_ignored(Path(entry.path)):
                             continue
@@ -173,6 +186,14 @@ class DiskExplorer:
                     except (OSError, PermissionError):
                         continue
 
+                    if (
+                        on_update is not None
+                        and index + 1 < len(entries)
+                        and ((index + 1) % 64 == 0 or monotonic() - last_update >= 0.05)
+                    ):
+                        on_update(list(items), len(entries) - index - 1)
+                        last_update = monotonic()
+
         except (OSError, PermissionError):
             pass
 
@@ -184,10 +205,17 @@ class DiskExplorer:
             )
         )
 
+        if on_update is not None and not (
+            stop_event is not None and stop_event.is_set()
+        ):
+            on_update(list(items), 0)
+
         return items
 
     def _is_ignored(self, path: Path) -> bool:
         """Check if a path should be skipped by the explorer."""
+        if not self.ignored_paths:
+            return False
         normalized = path.expanduser().resolve()
         for candidate in self.ignored_paths:
             if normalized == candidate or candidate in normalized.parents:
