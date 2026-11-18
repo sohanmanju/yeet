@@ -53,6 +53,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["yeet"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "yeet/THIRD_PARTY_NOTICES.md"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",

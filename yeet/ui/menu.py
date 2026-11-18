@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
+from pathlib import Path
 
-from prompt_toolkit import Application
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window, FormattedTextControl
+from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
+
+from .application import TerminalApplication
+from .geometry import content_width, fit, single_line
+from .meter import THEME, disk_overview
+from .view import ScreenView, ViewLayout
 
 
 @dataclass(frozen=True)
@@ -34,26 +39,32 @@ class WorkflowMenu:
     def _get_header(self) -> FormattedText:
         return FormattedText(
             [
-                ("class:title", f"\n  {self.title}\n\n"),
-                ("class:help", "  [↑/↓] Move  [Enter] Select\n\n"),
+                ("class:title", f"\n  {self.title}\n"),
             ]
         )
 
     def _get_row(self, idx: int) -> FormattedText:
         option = self.options[idx]
-        is_cursor = idx == self.cursor
-        row = f"  {'➜' if is_cursor else ' '} {option.label:<18} - {option.description}"
-        style = "class:cursor" if is_cursor else "class:normal"
+        width = content_width()
+        label_width = min(22, max(len(option.label) for option in self.options))
+        label = option.label
+        if width >= label_width + 20:
+            label = f"{fit(label, label_width)}  {option.description}"
+        row = f"  {'›' if idx == self.cursor else ' '} {single_line(label)}"
+        style = "class:cursor" if idx == self.cursor else "class:normal"
         return FormattedText([(style, row)])
 
-    def _get_content(self) -> FormattedText:
-        lines: list[tuple[str, str]] = []
-        lines.extend(self._get_header())
-        for idx in range(len(self.options)):
-            lines.extend(self._get_row(idx))
-            lines.append(("", "\n"))
-        lines.append(("class:help", "\n  Use arrow keys and Enter.\n"))
-        return FormattedText(lines)
+    def _get_content(self) -> ScreenView:
+        header = list(self._get_header())
+        header.extend(disk_overview(Path.home()))
+        footer = [("class:help", "  j/k move · Enter select · q quit\n")]
+        return ScreenView(
+            FormattedText(header),
+            len(self.options),
+            self._get_row,
+            FormattedText(footer),
+            self.cursor,
+        )
 
     def _move_up(self) -> None:
         self.cursor = (self.cursor - 1) % len(self.options)
@@ -88,6 +99,7 @@ class WorkflowMenu:
             self._choose_current()
             event.app.exit()
 
+        @kb.add("q")
         @kb.add("escape")
         def _quit(event) -> None:
             self._cancel()
@@ -99,14 +111,16 @@ class WorkflowMenu:
                 "help": "dim",
                 "cursor": "bold cyan",
                 "normal": "",
+                **THEME,
             }
         )
-        control = FormattedTextControl(text=self._get_content, focusable=True)
-        app = Application(
-            layout=Layout(HSplit([Window(content=control, wrap_lines=False)])),
+        view = ViewLayout(self._get_content)
+        app = TerminalApplication(
+            layout=view.layout,
             key_bindings=kb,
+            color_depth=ColorDepth.TRUE_COLOR,
             style=style,
-            full_screen=False,
+            full_screen=True,
             mouse_support=False,
         )
 

@@ -4,24 +4,27 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from shutil import get_terminal_size
 from pathlib import Path
 
 from prompt_toolkit import Application
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
-from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.output import ColorDepth
+from prompt_toolkit.styles import Style
 
 from ..config import get_config
 from ..scanner import DiskExplorer
 from ..utils import (
-    DiskItem,
     SIZE_LOADING,
+    DiskItem,
     format_size,
     open_path,
 )
 from . import explorer_render
+from .application import TerminalApplication
+from .geometry import terminal_size
+from .meter import THEME
+from .view import ScreenView, ViewLayout
 
 
 class DiskExplorerUI:
@@ -91,15 +94,6 @@ class DiskExplorerUI:
         self._loading_thread: threading.Thread | None = None
         self._stop_loading = threading.Event()
 
-        # Column widths
-        self.col_widths = {
-            "select": 3,
-            "icon": 2,
-            "name": 45,
-            "size": 12,
-            "modified": 14,
-        }
-
         # Filter state
         self.filter_mode: bool = False
         self.filter_text: str = ""
@@ -112,6 +106,7 @@ class DiskExplorerUI:
 
         # Extensions overlay state
         self.show_extensions: bool = False
+        self.overlay_cursor = 0
 
         # Help overlay
         self.show_help: bool = False
@@ -267,7 +262,7 @@ class DiskExplorerUI:
         path_to_item = {item.path: item for item in items_to_load}
 
         # Calculate which items are currently visible (dynamic viewport based on terminal)
-        term_height = get_terminal_size().lines
+        term_height = terminal_size().rows
         viewport_size = max(5, term_height - 16)
         total = len(self.items)
         if total <= viewport_size:
@@ -339,7 +334,7 @@ class DiskExplorerUI:
     def _get_help_content(self) -> FormattedText:
         return explorer_render.get_help_content(self)
 
-    def _get_content(self) -> FormattedText:
+    def _get_content(self) -> ScreenView:
         return explorer_render.get_content(self)
 
     def navigate_into(self, item: DiskItem) -> None:
@@ -431,6 +426,15 @@ class DiskExplorerUI:
         @kb.add("up")
         @kb.add("k")
         def move_up(event):
+            if self.show_help or self.show_extensions:
+                self.overlay_cursor = max(
+                    0,
+                    min(
+                        explorer_render.overlay_length(self) - 1,
+                        self.overlay_cursor - 1,
+                    ),
+                )
+                return
             if self.filter_mode or self.age_filter_mode:
                 return
             display_items = self._get_display_items()
@@ -440,6 +444,15 @@ class DiskExplorerUI:
         @kb.add("down")
         @kb.add("j")
         def move_down(event):
+            if self.show_help or self.show_extensions:
+                self.overlay_cursor = max(
+                    0,
+                    min(
+                        explorer_render.overlay_length(self) - 1,
+                        self.overlay_cursor + 1,
+                    ),
+                )
+                return
             if self.filter_mode or self.age_filter_mode:
                 return
             display_items = self._get_display_items()
@@ -566,7 +579,7 @@ class DiskExplorerUI:
             display_items = self._get_display_items()
             if display_items and self.cursor < len(display_items):
                 item = display_items[self.cursor]
-                success, msg = open_path(item.path)
+                _success, msg = open_path(item.path)
                 self.status_message = msg
 
         @kb.add("~")
@@ -594,6 +607,7 @@ class DiskExplorerUI:
                 return
             if self.age_filter_mode:
                 return
+            self.overlay_cursor = 0
             self.show_extensions = not self.show_extensions
 
         @kb.add("f")
@@ -663,12 +677,30 @@ class DiskExplorerUI:
         @kb.add("pageup")
         def page_up(event):
             """Move cursor up 10 items."""
+            if self.show_help or self.show_extensions:
+                self.overlay_cursor = max(
+                    0,
+                    min(
+                        explorer_render.overlay_length(self) - 1,
+                        self.overlay_cursor - 10,
+                    ),
+                )
+                return
             self.cursor = max(0, self.cursor - 10)
 
         @kb.add("c-d")
         @kb.add("pagedown")
         def page_down(event):
             """Move cursor down 10 items."""
+            if self.show_help or self.show_extensions:
+                self.overlay_cursor = max(
+                    0,
+                    min(
+                        explorer_render.overlay_length(self) - 1,
+                        self.overlay_cursor + 10,
+                    ),
+                )
+                return
             display_items = self._get_display_items()
             if display_items:
                 self.cursor = min(len(display_items) - 1, self.cursor + 10)
@@ -732,6 +764,7 @@ class DiskExplorerUI:
 
         @kb.add("?")
         def toggle_help(event):
+            self.overlay_cursor = 0
             self.show_help = not self.show_help
 
         @kb.add("<any>")
@@ -793,28 +826,15 @@ class DiskExplorerUI:
                 # Filter styles
                 "filter-input": "bold fg:ansiyellow",
                 "filter-active": "fg:ansiyellow",
+                **THEME,
             }
         )
 
-        # Create control
-        control = FormattedTextControl(
-            text=self._get_content,
-            focusable=True,
-        )
-
-        # Layout
-        layout = Layout(
-            HSplit(
-                [
-                    Window(content=control, wrap_lines=False),
-                ]
-            )
-        )
-
-        # Application
-        self._app = Application(
-            layout=layout,
+        view = ViewLayout(self._get_content)
+        self._app = TerminalApplication(
+            layout=view.layout,
             key_bindings=kb,
+            color_depth=ColorDepth.TRUE_COLOR,
             style=style,
             full_screen=True,
             mouse_support=True,
