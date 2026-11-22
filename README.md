@@ -1,324 +1,208 @@
 # yeet
 
-A fast CLI for reclaiming disk space by finding stale projects, large files, caches, installer leftovers, and other removable data.
+Find what's taking up disk space, choose what to remove, and review it before deleting—all from your terminal.
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-![Snyk Vulnerabilities for GitHub Repo](https://snyk.io/test/github/sohanmanju/yeet/badge.svg?targetFile=requirements.txt)
+Yeet includes an interactive disk explorer and focused scans for stale projects, large files, caches, build artifacts, and downloaded installers. macOS also gets Xcode cleanup and app leftover detection.
 
-The interactive UI includes a colored dot-matrix storage meter: the menu shows home disk capacity, the explorer groups the current folder by file type, and cleanup screens show the size of every measured app, project, or file category. Navigation highlights a group without changing its share; deletion selections are counted separately in the footer. Large Files groups by app ownership when available, and otherwise by file category, and represents the files found by that scan rather than full installed-app sizes. Directory entries arrive in batches while folder sizes load in the background. Photo files share one stable Photos category rather than a different color per large file. Small files count toward the meter even when hidden from the list. With a known parent size, unmeasured bytes stay dim; otherwise the bar explicitly shows item-count progress until measurement finishes. Ghostty 1.4+ and Kitty display a live raw-pixel canvas ported from fix-storage, with seven dot rows, twinkle, eased size transitions, focus fades, and a bright scanning edge. No image files or graphics dependencies are needed. Other terminals use a text dot grid. Screens redraw when the terminal or font size changes: tables expand to the available width, secondary columns collapse in narrow windows, and the focused row and selected items are preserved.
+## Install
 
-## Features
+### macOS and Linux
 
-### Disk Explorer
-Browse your filesystem interactively, sorted by size. A visual disk usage analyzer for the terminal.
-
-- **Navigate directories** with vim-style keybindings
-- **Filter by name or age** to find specific items
-- **Multi-select across directories** before batch deletion
-- **File type breakdown** to see what's using space
-- **Persisted bookmarks** for quick return to frequently used paths
-- **Path-aware filtering** that matches item names and full paths
-- **Metadata-rich info panel** for item details without extra traversal
-- **Move to trash** by default (recoverable) or permanent delete
-
-### History
-Review past cleanup runs from `~/.config/yeet/history.jsonl`.
-
-- Tracks workflow, selection counts, deletions, reclaimed space and bytes moved to Trash
-- Shows recent runs in a compact terminal table
-
-### Stale Projects Scanner
-Find coding projects you haven't touched in months.
-
-- Detects projects by markers (package.json, pyproject.toml, Cargo.toml, go.mod, etc.)
-- Shows last opened time, last commit date, and project size
-- Supports Node.js, Python, Rust, Go, Ruby, Java, .NET, PHP, Swift, and more
-
-### Large File Scanner
-Find big files hogging your storage.
-
-- Configurable size threshold (default 25MB)
-- Shows file type, size, and last modified date
-
-### System Cache Scanner
-Clear browser, package manager, and app caches.
-
-- Cross-platform support (macOS, Linux, Windows)
-- 60+ cache locations including:
-  - **Browsers**: Chrome, Firefox, Safari, Edge, Brave, Arc
-  - **Package Managers**: npm, yarn, pnpm, pip, cargo, go, maven, gradle, homebrew
-  - **Build Tools**: Xcode DerivedData, Android SDK, Bazel, ccache
-  - **Containers**: Docker, Podman, Minikube
-  - **IDEs**: VS Code, Cursor, JetBrains, Sublime Text, Vim/Neovim
-
-### Xcode Cleanup (macOS)
-Reclaim tens of gigabytes from Xcode's caches.
-
-- **Simulator Runtimes** - Often 5-10+ GB each
-- Device Support files
-- Derived Data
-- Archives
-- Documentation Cache
-- Smart detection of "latest" versions to keep
-
-### Project Artifact Purge
-Clean build outputs and dependency caches from coding projects.
-
-- Finds `node_modules`, `dist`, `build`, `target`, `.next`, `.venv`, `.gradle`, `.build`, `Pods`, and `DerivedData`
-- Groups artifacts by project for safer cleanup
-- Works in interactive and JSON modes
-
-### JSON and Workflow Mode
-Run workflows directly from the CLI for scripting and automation.
-
-- `--workflow` selects a single workflow without the interactive menu
-- `--json` emits scan results as JSON and exits
-- `--history` shows the cleanup history view and exits
-
-### Installer Cleanup
-Find and remove downloaded installer files.
-
-- Scans common download locations like Downloads, Desktop, Homebrew cache, and Mail Downloads
-- Detects `.dmg`, `.pkg`, `.zip`, `.tar.gz`, `.iso`, and app bundles
-- Works in interactive and JSON modes
-
-### App Leftovers
-Clean leftover data from uninstalled macOS apps.
-
-- Scans `Application Support`, `Caches`, `Preferences`, `Logs`, `WebKit`, `Containers`, and `LaunchAgents`
-- Uses installed app detection to avoid obvious false positives
-- Works in interactive and JSON modes
-
-### Safety
-
-- Moves deletions to trash by default when available
-- Requires confirmation before destructive actions
-- Protects system paths and user-configured protected paths
-- Supports user-defined ignored paths for explorer scans
-- Records cleanup history automatically
-
-### Security
-
-- Dependency vulnerabilities are checked in GitHub Actions with Snyk
-- Configure the `SNYK_TOKEN` repository secret for the security workflow
-
-## Installation
-
-Requires Python 3.10 or higher.
-
-```bash
-# Using uv (recommended)
-uv tool install git+https://github.com/sohanmanju/yeet.git
-
-# Using pip
-pip install git+https://github.com/sohanmanju/yeet.git
-
-# Don't have Python/uv set up? (macOS)
-brew install uv && uv tool install git+https://github.com/sohanmanju/yeet.git
-
-# From source
-git clone https://github.com/sohanmanju/yeet.git
-cd yeet
-pip install -e .
+```sh
+curl -fsSL https://raw.githubusercontent.com/sohanmanju/yeet/master/install.sh | sh
 ```
 
-## Usage
+The installer sets up [uv](https://docs.astral.sh/uv/) if needed, installs yeet in an isolated tool environment, and downloads Python 3.12 if it isn't available. You don't need Git, Homebrew, an existing Python installation, or sudo. It requires `curl` and internet access. It updates your shell profile when needed to make the command available; restart your terminal if `yeet` isn't found.
 
-```bash
-# Interactive mode with menu
+To inspect the installer first, download [install.sh](install.sh), read it, then run `sh install.sh`.
+
+Already have uv? Install directly:
+
+```sh
+uv tool install --python 3.12 https://github.com/sohanmanju/yeet/archive/refs/heads/master.zip
+uv tool update-shell
+```
+
+### Windows (PowerShell)
+
+Install uv using its [official installer](https://docs.astral.sh/uv/getting-started/installation/):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Restart PowerShell, then install yeet:
+
+```powershell
+uv tool install --python 3.12 https://github.com/sohanmanju/yeet/archive/refs/heads/master.zip
+uv tool update-shell
+```
+
+Restart PowerShell again if `yeet` isn't found.
+
+### Update or uninstall
+
+To update, rerun the macOS/Linux installer, or run this on any platform:
+
+```sh
+uv tool install --python 3.12 --upgrade https://github.com/sohanmanju/yeet/archive/refs/heads/master.zip
+```
+
+To uninstall:
+
+```sh
+uv tool uninstall yeet
+```
+
+This removes the tool environment and command. Configuration and cleanup history in `~/.config/yeet/` are retained.
+
+## First run
+
+```sh
 yeet
+```
 
-# Scan a specific directory
-yeet /path/to/scan
+Choose a workflow from the menu. Directory-based workflows let you choose where to scan; you can also supply a starting path:
 
-# Customize thresholds
-yeet --days 30              # Projects inactive for 30+ days (default: 90)
-yeet --min-size 50          # Files larger than 50MB (default: 25)
-yeet --min-cache-size 10    # Caches larger than 10MB (default: 1)
+```sh
+yeet ~/Downloads
+```
 
-# Export scan results to JSON (for scripting)
-yeet ~/Library --export results.json
-yeet ~/Downloads --export -   # Output to stdout
+Browse results, select items, then review the paths and sizes before confirming deletion. The storage meter shows how space is distributed as measurements arrive. Ghostty 1.4+ and Kitty support the pixel canvas; other terminals use a text dot grid.
 
-# Run a specific workflow non-interactively
+| Workflow | What it finds |
+| --- | --- |
+| Explore Disk | Files and folders, sorted by size |
+| Stale Projects | Coding projects inactive for 90 days by default |
+| Large Files | Files larger than 25 MB by default |
+| System Caches | Known browser, package manager, IDE, and application caches |
+| Project Artifacts | Build outputs and dependencies such as `node_modules`, `target`, `.next`, and `.venv` |
+| Installer Cleanup | Downloaded installers and archives |
+| App Leftovers (macOS) | Data associated with apps that are no longer installed |
+| Xcode Cleanup (macOS) | Simulators, device support, Derived Data, archives, and documentation |
+| History | Previous cleanup runs and their results |
+
+## Common commands
+
+Skip the menu by selecting a workflow:
+
+```sh
+yeet --workflow explore ~/Downloads
+yeet --workflow projects --days 30 ~/Projects
+yeet --workflow files --min-size 100 ~/Downloads
+yeet --workflow caches --min-cache-size 10
+yeet --workflow purge ~/Projects
+```
+
+Export scan results without deleting anything:
+
+```sh
+yeet --workflow files --json ~/Downloads
 yeet --workflow caches --json
 yeet --workflow purge --json ~/Projects
-yeet --workflow installer --json ~/Downloads
-yeet --workflow leftovers --json
-yeet --workflow files --json ~/Downloads
-yeet --workflow history
-
-# Review past cleanup runs
-yeet --history
+yeet ~/Downloads --export results.json
+yeet ~/Downloads --export -
 ```
 
-## Keyboard Shortcuts
+`--json` requires a workflow. `--export` exports a disk scan to a file, or to stdout with `-`.
 
-### Disk Explorer
+```sh
+yeet --history             # Recent cleanup runs
+yeet --history --limit 50  # Show more history
+yeet --help               # All options
+yeet --version
+```
+
+## Keyboard controls
+
+In the disk explorer:
 
 | Key | Action |
-|-----|--------|
-| `j` / `k` or `↑` / `↓` | Navigate up/down |
-| `Enter` / `l` | Open directory |
-| `h` / `Backspace` | Go to parent directory |
-| `g` / `G` | Go to top/bottom |
-| `Ctrl+U` / `Ctrl+D` | Page up/down |
-| `~` | Jump to home directory |
-| `/` | Jump to root |
+| --- | --- |
+| `↑` / `↓` or `k` / `j` | Move between items |
+| `Enter` / `l` | Open a directory |
+| `h` / `Backspace` | Go to the parent directory |
 | `Space` | Toggle selection |
-| `*` | Select all visible |
-| `u` | Deselect all |
-| `d` | Delete selected |
-| `f` | Filter by name |
-| `a` | Filter by age |
-| `c` | Clear filter |
-| `e` | Show file type breakdown |
-| `i` | Show item info |
+| `*` / `u` | Select all visible / deselect all |
+| `d` | Review selected items for deletion |
+| `f` / `a` / `c` | Filter by name / age / clear filter |
 | `s` | Cycle sort mode |
 | `t` | Toggle small items |
-| `o` | Open in Finder/file manager |
-| `b` | Jump to next bookmark |
-| `B` | Bookmark current directory |
+| `i` / `e` | Item info / file type breakdown |
+| `o` | Open in the file manager |
+| `B` / `b` | Bookmark this directory / jump to next bookmark |
+| `~` / `/` | Jump to home / root |
+| `g` / `G` | Jump to first / last item |
+| `Ctrl+U` / `Ctrl+D` | Page up / down |
 | `?` | Show help |
 | `q` / `Esc` | Quit |
 
-### Selection Screens (Projects/Files/Caches)
+In workflow selection lists, use `Space` to select, `a` / `n` to select all / none, and `Enter` to review. Use `q` / `Esc` to cancel. Review screens use `Tab` or `←` / `→` to choose an action and `Enter` to activate it; Back is selected by default.
 
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` or `j` / `k` | Navigate up/down |
-| `Space` | Toggle selection |
-| `Enter` | Confirm selection |
-| `a` | Select all |
-| `n` | Select none |
-| `o` | Open in file manager |
-| `q` / `Esc` | Cancel |
+## Deletion and recovery
+
+Yeet uses Trash by default when available. Moving files to Trash does **not** free their disk space until Trash is emptied. Results distinguish bytes moved to Trash from space reclaimed through permanent deletion.
+
+If Trash is unavailable, permanent deletion requires explicit confirmation. Xcode cleanup uses permanent deletion. Built-in and configured protected paths remain blocked. Failed items appear in the results and stay selected for retry.
+
+Scans are suggestions: review every selected path, particularly app leftovers and archives. Removing project dependencies or build outputs can require downloading or rebuilding them later. Yeet runs with your user's permissions; inaccessible locations are skipped. Run it as your normal user.
+
+Cleanup history is stored in `~/.config/yeet/history.jsonl`.
 
 ## Configuration
 
-Yeet stores settings in `~/.config/yeet/config.toml`:
+Create `~/.config/yeet/config.toml` to override defaults. Omit any settings you don't need.
 
 ```toml
 [explorer]
-start_path = "~"        # Starting directory for disk explorer
-min_size_mb = 5         # Minimum size to show in explorer
-show_hidden = true      # Show hidden files/directories
+start_path = "~"
+min_size_mb = 5
+show_hidden = true
 
 [deletion]
-use_trash = true        # Move to trash instead of permanent delete
-confirm_delete = true   # Ask for confirmation before delete
+use_trash = true
+confirm_delete = true
 
 [scanner]
-days_threshold = 90     # Days to consider project stale
-large_file_mb = 25      # Minimum size for large files
-cache_size_mb = 1       # Minimum cache size to show
+days_threshold = 90
+large_file_mb = 25
+cache_size_mb = 1
 
 [cache]
-enabled = true          # Persist size cache to disk
-max_age_hours = 24      # Max age of cached sizes
+enabled = true
+max_age_hours = 24
 
 [paths]
-protected_paths = []     # Extra paths that cannot be deleted
-ignored_paths = []       # Extra paths skipped during disk explorer scans
-bookmarks = []           # Saved disk explorer bookmarks
+protected_paths = ["~/Documents/important"]
+ignored_paths = []
+bookmarks = ["~/Downloads", "~/Projects"]
 ```
 
-## Safety
+`protected_paths` blocks deletion. `ignored_paths` excludes paths from disk explorer scans. Bookmarks are also saved when you press `B` in the explorer.
 
-- **Move to trash by default** - Deleted items can be recovered from system trash
-- **Interactive confirmation** before any deletion
-- **Preview** what will be deleted with total size
-- **Quit warning** if you have items selected
-- **No automatic deletion** - you always choose what to delete
-- Caches can be regenerated by apps (safe to delete)
-- Warns before deleting system paths
+## Development
 
-## Permissions
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/) and Git.
 
-Yeet runs without elevated permissions and cleans up user-owned caches and files. This covers the vast majority of reclaimable disk space.
+```sh
+git clone https://github.com/sohanmanju/yeet.git
+cd yeet
+uv sync --extra dev --python 3.12
+uv run yeet --help
+uv run pytest
+```
 
-**Some system locations require root/sudo access:**
+To install your checkout as a command:
 
-| Location | Platform | Notes |
-|----------|----------|-------|
-| `/var/lib/docker` | Linux | Use `docker system prune` instead |
-| `/var/lib/containers` | Linux | Use `podman system prune` instead |
-| `/var/log` | Linux | System logs - use `journalctl --vacuum-*` |
-| `/System/Library/*` | macOS | SIP-protected - cannot modify |
+```sh
+uv tool install --editable . --python 3.12
+uv tool update-shell
+```
 
-Yeet gracefully skips paths it can't access - no errors, it just won't show them.
+The package supports Python 3.10+. Python 3.11+ is needed to read TOML configuration unless `tomli` is installed separately; the installer uses 3.12.
 
-## Performance
-
-- **5x faster** directory size calculation using native `du` command
-- **Parallel scanning** with thread pool for concurrent operations
-- **Prioritized loading** - visible items load first
-- **Persistent cache** - sizes cached for faster subsequent scans
-- **Bounded memory** - LRU cache prevents unbounded growth
-- **Single-pass metadata scans** for project and Xcode workflows where practical
-- **Streaming history reads** for large history files
-
-## How It Works
-
-### Stale Project Detection
-
-A project is considered "stale" based on the **most recent** of:
-- Last file access time
-- Last file modification time  
-- Last git commit date (if it's a git repository)
-
-This ensures recently opened projects aren't marked as stale even if they haven't been committed.
-
-### Disk Size Calculation
-
-Yeet uses `du` for accurate disk usage reporting:
-- Correctly handles **sparse files** (VM disk images, containers)
-- Reports **actual disk usage**, not apparent file size
-- Handles permission errors gracefully
-
-### Cache Detection
-
-The scanner automatically detects your operating system and checks common cache locations:
-- **macOS**: `~/Library/Caches`, Xcode DerivedData, Homebrew, etc.
-- **Linux**: `~/.cache`, `~/.local/share`, etc.
-- **Windows**: `AppData/Local`, `AppData/Roaming`, etc.
-
-## Dependencies
-
-- [Rich](https://github.com/Textualize/rich) - Beautiful terminal formatting
-- [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) - Interactive keyboard navigation
+Bug reports, new cache locations, and contributions are welcome through [GitHub issues](https://github.com/sohanmanju/yeet/issues) and pull requests. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Feel free to:
-- Report bugs
-- Suggest new cache locations
-- Add support for more project types
-- Improve documentation
-
-## Author
-
-Created by [sohanmanju](https://github.com/sohanmanju)
-
-### Cohesive cleanup journey
-
-Directory entry, scanning, selection, deletion review, progress, and results use
-the same full-screen terminal layout. Review lists every selected path and its
-size. Use ↑/↓ to inspect items, Tab or ←/→ to choose an action, and Enter to
-activate it. Back is selected by default; Escape returns to the unchanged list.
-
-Deletion review, progress, and results stay within the active list layout, with inline actions and status. Results show every success and failure. Continue refreshes the directory and
-keeps failed items selected for retry. Choose another directory stays in the
-same workflow; Main menu switches workflows. System-wide workflows offer Scan
-again for their fixed locations.
-
-Trash operations report bytes moved, not recovered disk space. If Trash is
-unavailable, permanent deletion requires explicit confirmation; execution
-never silently switches operations. Configured and built-in protected paths
-remain blocked. Cache contents-only cleanup retains the parent directory,
-and Xcode cleanup explicitly uses permanent deletion.
+[MIT](LICENSE). Built with [Rich](https://github.com/Textualize/rich) and [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for additional attribution.
