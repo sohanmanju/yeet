@@ -9,12 +9,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import (
+from ..formatting import parse_xcode_version
+
+from ..filesystem import is_macos
+
+from ..filesystem import directory_stats
+
+from ..models import (
     XcodeItem,
     XcodeItemType,
     XcodeScanResults,
-    is_macos,
-    parse_xcode_version,
 )
 
 
@@ -33,7 +37,6 @@ class XcodeScanner:
     Only runs on macOS.
     """
 
-    # Xcode directories relative to home
     XCODE_PATHS = {
         "device_support": {
             "iOS": "Library/Developer/Xcode/iOS DeviceSupport",
@@ -67,11 +70,9 @@ class XcodeScanner:
         """
         results = XcodeScanResults()
 
-        # Only run on macOS
         if not is_macos():
             return results
 
-        # Scan each category
         self._scan_device_support(results, progress_callback)
         self._scan_derived_data(results, progress_callback)
         self._scan_archives(results, progress_callback)
@@ -82,22 +83,10 @@ class XcodeScanner:
         return results
 
     def _get_directory_stats(self, path: Path) -> tuple[int, datetime]:
-        """Get total size and most recent modification time in one traversal."""
-        total = 0
         try:
-            latest = path.stat().st_mtime
-            for root, _, files in os.walk(path):
-                for fname in files:
-                    try:
-                        fpath = Path(root) / fname
-                        fstat = fpath.stat()
-                        total += fstat.st_size
-                        if fstat.st_mtime > latest:
-                            latest = fstat.st_mtime
-                    except (OSError, PermissionError):
-                        continue
-            return total, datetime.fromtimestamp(latest)
-        except (OSError, PermissionError):
+            stats = directory_stats(path)
+            return stats.size, stats.last_modified
+        except OSError:
             return 0, datetime.now()
 
     def _scan_device_support(
@@ -106,16 +95,12 @@ class XcodeScanner:
         progress_callback: Callable[[int, str], None] | None,
     ) -> None:
         """Scan Device Support directories for each platform."""
-        # Track latest version per platform for marking
-        platform_versions: dict[str, list[tuple[tuple[int, ...], Path]]] = {}
 
         for platform_name, rel_path in self.XCODE_PATHS["device_support"].items():
             support_dir = self.home / rel_path
 
             if not support_dir.exists() or not support_dir.is_dir():
                 continue
-
-            platform_versions[platform_name] = []
 
             try:
                 for entry in os.scandir(support_dir):
@@ -127,10 +112,6 @@ class XcodeScanner:
                         path = Path(entry.path)
                         size, mtime = self._get_directory_stats(path)
 
-                        # Track for latest detection
-                        if version:
-                            platform_versions[platform_name].append((version, path))
-
                         item = XcodeItem(
                             path=path,
                             name=entry.name,
@@ -140,7 +121,7 @@ class XcodeScanner:
                             platform=platform_name,
                             version=version,
                             build=build,
-                            is_latest=False,  # Will be set after scanning all
+                            is_latest=False,
                         )
                         results.items.append(item)
 
@@ -155,20 +136,7 @@ class XcodeScanner:
             except (OSError, PermissionError) as e:
                 results.scan_errors.append(f"{support_dir}: {e}")
 
-        # Mark latest versions per platform
-        for platform_name, versions in platform_versions.items():
-            if not versions:
-                continue
-            # Find the maximum version
-            latest_version = max(versions, key=lambda x: x[0])[0]
-            # Mark all items with this version as latest
-            for item in results.items:
-                if (
-                    item.item_type == XcodeItemType.DEVICE_SUPPORT
-                    and item.platform == platform_name
-                    and item.version == latest_version
-                ):
-                    item.is_latest = True
+        self._mark_latest(results, XcodeItemType.DEVICE_SUPPORT)
 
     def _scan_derived_data(
         self,
@@ -186,7 +154,6 @@ class XcodeScanner:
                 if not entry.is_dir():
                     continue
 
-                # Skip ModuleCache and other non-project dirs
                 if entry.name in ("ModuleCache", "ModuleCache.noindex"):
                     continue
 
@@ -207,7 +174,7 @@ class XcodeScanner:
                         platform=None,
                         version=None,
                         build=None,
-                        is_latest=False,  # Derived data can always be deleted
+                        is_latest=False,
                     )
                     results.items.append(item)
 
@@ -249,7 +216,6 @@ class XcodeScanner:
                         path = Path(archive_entry.path)
                         size, mtime = self._get_directory_stats(path)
 
-                        # Try to parse Info.plist for app details
                         app_info = None
                         display_name = archive_entry.name.replace(".xcarchive", "")
                         info_plist = path / "Info.plist"
@@ -270,7 +236,7 @@ class XcodeScanner:
                                     ),
                                     "build": app_props.get("CFBundleVersion", "?"),
                                 }
-                                # Create a nice display name
+
                                 display_name = (
                                     f"{app_info['name']} {app_info['version']} "
                                     f"({app_info['build']})"
@@ -309,7 +275,7 @@ class XcodeScanner:
         progress_callback: Callable[[int, str], None] | None,
     ) -> None:
         """Scan for simulator runtimes using xcrun simctl."""
-        # Try to get runtime list from simctl
+
         try:
             result = subprocess.run(
                 ["xcrun", "simctl", "runtime", "list", "-v"],
@@ -319,7 +285,6 @@ class XcodeScanner:
             )
 
             if result.returncode != 0:
-                # simctl not available or failed
                 results.scan_errors.append(
                     "Could not list simulator runtimes (xcrun simctl failed)"
                 )
@@ -329,10 +294,6 @@ class XcodeScanner:
         except (subprocess.SubprocessError, FileNotFoundError) as e:
             results.scan_errors.append(f"Could not run xcrun simctl: {e}")
             return
-
-        # Parse the output to extract runtime info
-        # Track versions per platform for marking latest
-        platform_versions: dict[str, list[tuple[tuple[int, ...], int]]] = {}
 
         current_runtime: dict | None = None
 
@@ -344,18 +305,14 @@ class XcodeScanner:
                 r"^(\w+)\s+([\d.]+)\s+\(([^)]+)\)\s+-\s+([A-F0-9-]+)$", line
             )
             if runtime_match:
-                # Save previous runtime if exists
                 if current_runtime and current_runtime.get("deletable"):
-                    self._add_runtime_item(
-                        results, current_runtime, platform_versions, progress_callback
-                    )
+                    self._add_runtime_item(results, current_runtime, progress_callback)
 
                 platform = runtime_match.group(1)  # iOS, tvOS, watchOS
-                version_str = runtime_match.group(2)  # 26.2
-                build = runtime_match.group(3)  # 23C54
+                version_str = runtime_match.group(2)
+                build = runtime_match.group(3)
                 uuid = runtime_match.group(4)
 
-                # Parse version
                 try:
                     version = tuple(int(v) for v in version_str.split("."))
                 except ValueError:
@@ -374,7 +331,6 @@ class XcodeScanner:
                 continue
 
             if current_runtime:
-                # Parse Size: 7.8G
                 size_match = re.match(r"Size:\s+([\d.]+)([KMGT]?)B?", line)
                 if size_match:
                     size_num = float(size_match.group(1))
@@ -391,42 +347,36 @@ class XcodeScanner:
                     )
                     continue
 
-                # Parse Deletable: YES/NO
                 if line.startswith("Deletable:"):
                     current_runtime["deletable"] = "YES" in line
                     continue
 
-                # Parse Mount Path
                 if line.startswith("Mount Path:"):
                     current_runtime["path"] = line.split(":", 1)[1].strip()
                     continue
 
-        # Don't forget the last runtime
         if current_runtime and current_runtime.get("deletable"):
-            self._add_runtime_item(
-                results, current_runtime, platform_versions, progress_callback
-            )
+            self._add_runtime_item(results, current_runtime, progress_callback)
 
-        # Mark latest versions per platform
-        for platform_name, versions in platform_versions.items():
-            if not versions:
-                continue
-            # Find the maximum version
-            latest_version = max(versions, key=lambda x: x[0])[0]
-            # Mark all items with this version as latest
-            for item in results.items:
-                if (
-                    item.item_type == XcodeItemType.SIMULATOR_RUNTIME
-                    and item.platform == platform_name
-                    and item.version == latest_version
-                ):
-                    item.is_latest = True
+        self._mark_latest(results, XcodeItemType.SIMULATOR_RUNTIME)
+
+    @staticmethod
+    def _mark_latest(results: XcodeScanResults, item_type: XcodeItemType) -> None:
+        versioned = [
+            item
+            for item in results.items
+            if item.item_type == item_type and item.version
+        ]
+        latest: dict[str | None, tuple[int, ...]] = {}
+        for item in versioned:
+            latest[item.platform] = max(latest.get(item.platform, ()), item.version)
+        for item in versioned:
+            item.is_latest = item.version == latest[item.platform]
 
     def _add_runtime_item(
         self,
         results: XcodeScanResults,
         runtime: dict,
-        platform_versions: dict,
         progress_callback: Callable[[int, str], None] | None,
     ) -> None:
         """Add a simulator runtime item to results."""
@@ -435,14 +385,7 @@ class XcodeScanner:
         version_str = runtime["version_str"]
         build = runtime["build"]
 
-        # Display name: "tvOS 16.0 (20J373)"
         display_name = f"{platform} {version_str} ({build})"
-
-        # Track for latest detection
-        if version:
-            if platform not in platform_versions:
-                platform_versions[platform] = []
-            platform_versions[platform].append((version, len(results.items)))
 
         item = XcodeItem(
             path=Path(runtime.get("path") or f"/simctl:{runtime['uuid']}"),
@@ -454,7 +397,7 @@ class XcodeScanner:
             version=version,
             build=build,
             is_latest=False,
-            app_info={"uuid": runtime["uuid"]},  # Store UUID for deletion
+            app_info={"uuid": runtime["uuid"]},
         )
         results.items.append(item)
 
@@ -475,7 +418,6 @@ class XcodeScanner:
         try:
             size, mtime = self._get_directory_stats(docs_dir)
 
-            # Only add if there's actual content
             if size > 0:
                 item = XcodeItem(
                     path=docs_dir,
@@ -508,7 +450,6 @@ class XcodeScanner:
             return
 
         try:
-            # Scan per-device log folders
             for entry in os.scandir(logs_dir):
                 if not entry.is_dir():
                     continue
@@ -517,7 +458,6 @@ class XcodeScanner:
                     path = Path(entry.path)
                     size, mtime = self._get_directory_stats(path)
 
-                    # Only add if there's actual content
                     if size > 0:
                         item = XcodeItem(
                             path=path,

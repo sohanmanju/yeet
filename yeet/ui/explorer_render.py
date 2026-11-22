@@ -6,10 +6,13 @@ from math import ceil
 
 from prompt_toolkit.formatted_text import FormattedText
 
-from ..utils import SIZE_LOADING, DiskItem, format_days_ago, format_size
+from ..models import SIZE_LOADING, DiskItem
+from ..formatting import format_days_ago, format_size
 from .chrome import key_hints, screen_title
 from .geometry import content_width, fit, single_line, terminal_size
-from .meter import MUTED, Segment, dot_meter, legend
+from .meter import dot_meter, legend
+from .storage_model import Segment
+from .theme import MUTED
 from .responsive import table_line
 from .storage_groups import storage_group, storage_segments
 from .table_schemas import EXPLORER, EXTENSIONS
@@ -103,7 +106,9 @@ def get_row(
 ) -> FormattedText:
     item = display_items[idx]
     selected, cursor = item.path in ui.selected, idx == ui.cursor
-    total = parent_total if parent_total is not None else (get_parent_total_size(ui) or 0)
+    total = (
+        parent_total if parent_total is not None else (get_parent_total_size(ui) or 0)
+    )
     fraction = min(1, max(0, item.size) / total) if total else 0
     lit = round(fraction * 8)
     row = table_line(
@@ -377,7 +382,3 @@ def get_content(ui) -> ScreenView:
     return ScreenView(
         FormattedText(header), max(1, len(items)), row, FormattedText(footer), ui.cursor
     )
-
-
-def show_selection_view(ui) -> None:
-    ui.status_message = f"Selection: {len(ui.selected)} items - press [d] to delete"

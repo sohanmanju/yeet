@@ -5,8 +5,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Generic, TypeVar
+from pathlib import Path
 
-T = TypeVar("T")
+from ..models import CleanupItem
+
+T = TypeVar("T", bound=CleanupItem)
+
+
+@dataclass(frozen=True)
+class SelectionState:
+    selected_paths: frozenset[Path] = frozenset()
+    focused_path: Path | None = None
+    position: int = 0
 
 
 @dataclass(frozen=True)

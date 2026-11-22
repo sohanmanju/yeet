@@ -9,9 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import (
+from ..project_rules import SKIP_FOR_SIZE, detect_project_type
+
+from ..models import (
     DAYS_SINCE_ACCESS,
-    SKIP_FOR_SIZE,
     Project,
     ProjectType,
     ScanResults,
@@ -74,25 +75,21 @@ class ProjectScanner:
         """
         results = ScanResults()
 
-        # BFS to find project directories
         dirs_to_scan: deque[Path] = deque([root])
 
         while dirs_to_scan:
             current_dir = dirs_to_scan.popleft()
 
             try:
-                # Check if this directory is a project
                 project_type = self._detect_project_type(current_dir)
 
                 if project_type is not None:
-                    # This is a project - analyze it
                     project = self._analyze_project(current_dir, project_type)
 
                     if project:
                         results.total_projects_scanned += 1
                         results.total_size_scanned += project.total_size
 
-                        # Apply threshold filter
                         if (
                             self.include_all
                             or project.days_stale >= self.days_threshold
@@ -104,17 +101,14 @@ class ProjectScanner:
                                 results.total_projects_scanned, current_dir.name
                             )
 
-                    # Don't recurse into project directories
-                    # (nested projects will be found when we scan subdirs that aren't projects)
                     continue
 
-                # Not a project - scan subdirectories
                 with os.scandir(current_dir) as entries:
                     for entry in entries:
                         try:
                             if entry.is_dir(follow_symlinks=False):
                                 name = entry.name
-                                # Skip hidden dirs and known heavy directories
+
                                 if (
                                     not name.startswith(".")
                                     and name not in SKIP_FOR_SIZE
@@ -130,60 +124,10 @@ class ProjectScanner:
         return results
 
     def _detect_project_type(self, path: Path) -> ProjectType | None:
-        """
-        Detect if directory is a coding project and return its type.
-
-        Returns None if not a project.
-        """
         try:
-            entries = set()
-            with os.scandir(path) as it:
-                for entry in it:
-                    entries.add(entry.name)
-
-            # Check for git first (most common)
-            if ".git" in entries:
-                # Further classify by other markers
-                if "package.json" in entries:
-                    return ProjectType.NODE
-                if (
-                    "pyproject.toml" in entries
-                    or "setup.py" in entries
-                    or "requirements.txt" in entries
-                ):
-                    return ProjectType.PYTHON
-                if "Cargo.toml" in entries:
-                    return ProjectType.RUST
-                if "go.mod" in entries:
-                    return ProjectType.GO
-                return ProjectType.GIT
-
-            # Check for non-git projects
-            if "package.json" in entries:
-                return ProjectType.NODE
-            if "pyproject.toml" in entries or "setup.py" in entries:
-                return ProjectType.PYTHON
-            if "Cargo.toml" in entries:
-                return ProjectType.RUST
-            if "go.mod" in entries:
-                return ProjectType.GO
-            if "Gemfile" in entries:
-                return ProjectType.OTHER
-            if "pom.xml" in entries or "build.gradle" in entries:
-                return ProjectType.OTHER
-            if "composer.json" in entries:
-                return ProjectType.OTHER
-            if "pubspec.yaml" in entries:
-                return ProjectType.OTHER
-
-            # Check for Xcode projects
-            for name in entries:
-                if name.endswith(".xcodeproj") or name.endswith(".xcworkspace"):
-                    return ProjectType.OTHER
-
-            return None
-
-        except (OSError, PermissionError):
+            with os.scandir(path) as entries:
+                return detect_project_type({entry.name for entry in entries})
+        except OSError:
             return None
 
     def _analyze_project(self, path: Path, project_type: ProjectType) -> Project | None:
@@ -191,7 +135,6 @@ class ProjectScanner:
         try:
             is_git = (path / ".git").is_dir()
 
-            # Get last commit date if git repo
             last_commit = None
             if is_git:
                 last_commit = self._get_last_commit_date(path)
@@ -208,7 +151,7 @@ class ProjectScanner:
                 last_commit_date=last_commit,
                 is_git_repo=is_git,
             )
-        except Exception:
+        except (OSError, ValueError, OverflowError):
             return None
 
     def _get_project_stats(self, path: Path) -> tuple[int, datetime, datetime]:
@@ -267,7 +210,6 @@ class ProjectScanner:
             except (subprocess.SubprocessError, ValueError, OSError):
                 pass
 
-        # Fallback: check .git file timestamps
         return self._get_last_commit_via_files(project_path)
 
     def _get_last_commit_via_files(self, project_path: Path) -> datetime | None:

@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from .utils import (
+from .models import (
     CacheLocation,
     CacheScanResults,
     DiskItem,
@@ -89,19 +89,6 @@ def xcode_item_to_dict(item: XcodeItem) -> dict:
         "build": item.build,
         "is_latest": item.is_latest,
         "app_info": item.app_info,
-    }
-
-
-def disk_item_to_dict(item: DiskItem) -> dict:
-    return {
-        "path": str(item.path),
-        "name": item.name,
-        "size": item.size,
-        "size_formatted": item.size_formatted,
-        "is_dir": item.is_dir,
-        "modified": _dt(item.modified),
-        "days_since_modified": item.days_since_modified,
-        "item_count": item.item_count,
     }
 
 
@@ -210,12 +197,28 @@ def leftovers_scan_payload(results: LeftoverScanResults) -> dict:
     }
 
 
-def disk_scan_payload(root_path: Path, items: list[DiskItem], total_size: int) -> dict:
+def disk_scan_payload(root_path: Path, items: list[DiskItem]) -> dict:
+    measured = sorted(
+        (item for item in items if item.size > 0),
+        key=lambda item: item.size,
+        reverse=True,
+    )
+    total_size = sum(item.size for item in measured)
     return {
         "scan_date": datetime.now().isoformat(),
         "root_path": str(root_path),
         "total_size": total_size,
-        "items": [disk_item_to_dict(item) for item in items],
+        "items": [
+            {
+                "path": str(item.path),
+                "name": item.name,
+                "size": item.size,
+                "is_dir": item.is_dir,
+                "modified": _dt(item.modified),
+                "percent_of_parent": round(item.size / total_size * 100, 2),
+            }
+            for item in measured
+        ],
     }
 
 

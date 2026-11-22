@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import platform
 import subprocess
 from glob import glob
@@ -10,7 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import (
+from ..filesystem import directory_stats
+
+from ..models import (
     CacheCategory,
     CacheLocation,
     CacheScanResults,
@@ -31,12 +32,8 @@ class CacheScanner:
     - Runtime caches (Python, Ruby, Java)
     """
 
-    # Cache definitions: (name, category, relative_paths_by_os)
     # Paths are relative to home directory unless starting with /
     CACHE_DEFINITIONS: list[tuple[str, CacheCategory, dict[str, list[str]]]] = [
-        # =====================
-        # BROWSER CACHES
-        # =====================
         (
             "Google Chrome Cache",
             CacheCategory.BROWSER,
@@ -104,9 +101,6 @@ class CacheScanner:
                 ],
             },
         ),
-        # =====================
-        # PACKAGE MANAGERS
-        # =====================
         (
             "npm Cache",
             CacheCategory.PACKAGE_MANAGER,
@@ -221,9 +215,6 @@ class CacheScanner:
                 "linux": [".cache/Homebrew"],
             },
         ),
-        # =====================
-        # BUILD TOOLS
-        # =====================
         (
             "Xcode Derived Data",
             CacheCategory.BUILD_TOOL,
@@ -310,9 +301,6 @@ class CacheScanner:
                 "windows": ["AppData/Local/node-gyp"],
             },
         ),
-        # =====================
-        # CONTAINERS
-        # =====================
         (
             "Minikube Cache",
             CacheCategory.CONTAINER,
@@ -322,9 +310,6 @@ class CacheScanner:
                 "windows": [".minikube/cache"],
             },
         ),
-        # =====================
-        # IDE / EDITORS
-        # =====================
         (
             "VS Code Cache",
             CacheCategory.IDE,
@@ -393,9 +378,6 @@ class CacheScanner:
                 "darwin": ["Library/Caches/dev.zed.Zed"],
             },
         ),
-        # =====================
-        # SYSTEM CACHES
-        # =====================
         # Note: We don't include the top-level cache directories (~/Library/Caches,
         # ~/.cache) because:
         # 1. They contain many app-specific caches we already scan individually
@@ -420,21 +402,15 @@ class CacheScanner:
                 "windows": ["AppData/Local/Microsoft/FontCache"],
             },
         ),
-        # =====================
-        # RUNTIME CACHES
-        # =====================
         (
             "Python __pycache__",
             CacheCategory.RUNTIME,
             {
-                "darwin": [],  # Handled separately - found in project dirs
+                "darwin": [],
                 "linux": [],
                 "windows": [],
             },
         ),
-        # =====================
-        # OTHER
-        # =====================
         (
             "Electron Apps Cache",
             CacheCategory.OTHER,
@@ -489,35 +465,11 @@ class CacheScanner:
         elif system == "windows":
             return "windows"
         else:
-            return "linux"  # Default to Linux for unknown systems
+            return "linux"
 
     def _get_directory_stats(self, path: Path) -> tuple[int, int, datetime]:
-        """
-        Get total size, file count, and last modified time for a directory.
-
-        Returns:
-            Tuple of (total_size, file_count, last_modified)
-        """
-        total_size = 0
-        file_count = 0
-        latest_mtime = path.stat().st_mtime if path.exists() else 0
-
-        try:
-            for root, dirs, files in os.walk(path):
-                for fname in files:
-                    try:
-                        fpath = Path(root) / fname
-                        stat = fpath.stat()
-                        total_size += stat.st_size
-                        file_count += 1
-                        if stat.st_mtime > latest_mtime:
-                            latest_mtime = stat.st_mtime
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-
-        return total_size, file_count, datetime.fromtimestamp(latest_mtime)
+        stats = directory_stats(path)
+        return stats.size, stats.file_count, stats.last_modified
 
     def _expand_candidate_paths(self, rel_path: str) -> list[Path]:
         raw_paths: list[str]
@@ -605,34 +557,27 @@ class CacheScanner:
         ]
         for name, category, pattern, delete_contents_only in patterns:
             for path in self._expand_candidate_paths(pattern):
-                bundle_root = path
-                candidates.append((name, category, bundle_root, delete_contents_only))
+                candidates.append((name, category, path, delete_contents_only))
         return candidates
 
     def _darwin_user_cache_paths(self) -> list[tuple[str, CacheCategory, Path, bool]]:
         if self.os_type != "darwin":
             return []
-
-        candidates: list[tuple[str, CacheCategory, Path, bool]] = []
-        for key, label in (("DARWIN_USER_CACHE_DIR", "Darwin User Cache"),):
-            try:
-                result = subprocess.run(
-                    ["getconf", key], capture_output=True, text=True, check=True
-                )
-            except (OSError, subprocess.CalledProcessError):
-                continue
-
+        try:
+            result = subprocess.run(
+                ["getconf", "DARWIN_USER_CACHE_DIR"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
             value = result.stdout.strip()
-            if not value:
-                continue
-            path = Path(value)
-            try:
+            if value:
+                path = Path(value)
                 if path.exists() and path.is_dir() and not path.is_symlink():
-                    candidates.append((label, CacheCategory.SYSTEM, path, True))
-            except OSError:
-                continue
-
-        return candidates
+                    return [("Darwin User Cache", CacheCategory.SYSTEM, path, True)]
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        return []
 
     def _extra_candidates(self) -> list[tuple[str, CacheCategory, Path, bool]]:
         if self.os_type != "darwin":
@@ -680,7 +625,7 @@ class CacheScanner:
         """
         results = CacheScanResults()
         min_size_bytes = min_size_mb * 1024 * 1024
-        found_paths: set[Path] = set()  # Track to avoid duplicates
+        found_paths: set[Path] = set()
 
         def add_candidate(
             name: str,
@@ -732,7 +677,6 @@ class CacheScanner:
         for name, category, path, delete_contents_only in self._extra_candidates():
             add_candidate(name, category, path, delete_contents_only)
 
-        # Sort by size (largest first)
         results.caches.sort(key=lambda c: c.size, reverse=True)
 
         return results

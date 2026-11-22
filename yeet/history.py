@@ -1,4 +1,4 @@
-"""History storage and rendering helpers."""
+"""Append-only cleanup history storage."""
 
 from __future__ import annotations
 
@@ -6,13 +6,6 @@ import json
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich import box
-
-from .utils import format_size
 
 
 def get_history_path() -> Path:
@@ -35,7 +28,6 @@ def write_history_entry(entry: dict, path: Path | None = None) -> bool:
 def make_history_entry(
     workflow: str,
     *,
-    dry_run: bool,
     status: str,
     selected_count: int = 0,
     deleted_count: int = 0,
@@ -47,7 +39,6 @@ def make_history_entry(
     entry = {
         "timestamp": datetime.now().isoformat(),
         "workflow": workflow,
-        "dry_run": dry_run,
         "status": status,
         "selected_count": selected_count,
         "deleted_count": deleted_count,
@@ -87,39 +78,3 @@ def read_history(path: Path | None = None, limit: int | None = None) -> list[dic
         return []
 
     return list(entries)
-
-
-def render_history(console: Console, entries: list[dict]) -> None:
-    """Render history entries in a rich table."""
-    console.print()
-
-    if not entries:
-        console.print(Panel("[dim]No history found.[/]", title="Yeet History"))
-        return
-
-    table = Table(title="Yeet History", box=box.ROUNDED, header_style="bold magenta")
-    table.add_column("Time", style="cyan", no_wrap=True)
-    table.add_column("Workflow", style="bold")
-    table.add_column("Status", style="yellow")
-    table.add_column("Dry Run", justify="center")
-    table.add_column("Selected", justify="right")
-    table.add_column("Deleted", justify="right")
-    table.add_column("Reclaimed", justify="right")
-
-    for entry in entries:
-        timestamp = str(entry.get("timestamp", ""))
-        if "T" in timestamp:
-            timestamp = (
-                timestamp.split("T", 1)[0] + " " + timestamp.split("T", 1)[1][:8]
-            )
-        table.add_row(
-            timestamp,
-            str(entry.get("workflow", "")),
-            str(entry.get("status", "")),
-            "yes" if entry.get("dry_run") else "no",
-            str(entry.get("selected_count", 0)),
-            str(entry.get("deleted_count", 0)),
-            format_size(int(entry.get("reclaimed_bytes", 0))),
-        )
-
-    console.print(table)

@@ -39,10 +39,10 @@ def test_breakdown_sums_groups_and_preserves_all_measured_bytes():
 
 def test_breakdown_other_preserves_small_groups_and_their_focus():
     meter = ScanBreakdown([(f"App-{i}", i + 1) for i in range(9)])
-    assert sum(segment.size for segment in meter.segments) == sum(range(1, 10))
+    assert sum(segment.size for segment in meter.segments) == 45
     assert len(meter.segments) == 6
-    assert meter.group_indices["App-0"] == 5
-    assert meter.color_for("App-0") == meter.segments[5].color
+    assert meter.color_for("App-0") == meter.color_for("App-3")
+    assert meter.color_for("App-0") != meter.color_for("App-4")
 
 
 def test_partial_scan_does_not_count_loading_as_data(tmp_path, monkeypatch):
@@ -60,7 +60,8 @@ def test_partial_scan_does_not_count_loading_as_data(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(explorer, "get_cached_size", lambda path: 100)
     # Filtering does not make measured data disappear from the overview.
-    ui.filtered_items = []
+    ui.filter_text = "does-not-match-any-item"
+    ui._apply_filter()
     content = plain(get_storage_overview(ui))
     assert "Measuring 1 folder" in content
     assert "Folders 25 B" in content

@@ -1,58 +1,28 @@
-"""Common utilities for handlers."""
+"""Deletion safety and history shared by all cleanup workflows."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-from rich.console import Console
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    TaskProgressColumn,
-    TimeElapsedColumn,
-)
-
 from ..config import Config
 from ..history import make_history_entry, write_history_entry
 from ..safety import is_protected_path
-from ..utils import (
-    delete_directory,
-    delete_file,
-    move_to_trash,
-    trash_available,
-)
+from ..filesystem import delete_directory, delete_file, move_to_trash, trash_available
 
 
 def delete_item(
-    path: Path,
-    use_trash: bool,
-    *,
-    dry_run: bool = False,
-    config: Config | None = None,
+    path: Path, use_trash: bool, *, config: Config | None = None
 ) -> tuple[bool, str]:
-    """
-    Delete a file or directory, optionally using system trash.
-
-    Args:
-        path: Path to the file or directory to delete
-        use_trash: If True and trash is available, move to trash instead of permanent delete
-
-    Returns:
-        Tuple of (success, message)
-    """
+    """Execute exactly the confirmed operation; never silently fall back to deletion."""
     if is_protected_path(path, config):
         return False, f"Protected path: {path}"
-
-    if dry_run:
-        action = "move to trash" if use_trash else "delete"
-        return True, f"Dry run: would {action}: {path}"
-
-    if use_trash and trash_available():
+    if use_trash:
+        if not trash_available():
+            return (
+                False,
+                "Trash is unavailable. Review and explicitly confirm permanent deletion to proceed.",
+            )
         return move_to_trash(path)
-
-    if path.is_dir():
+    if path.is_dir() and not path.is_symlink():
         return delete_directory(path)
     return delete_file(path)
 
@@ -60,7 +30,6 @@ def delete_item(
 def record_history(
     workflow: str,
     *,
-    dry_run: bool,
     status: str,
     selected_count: int = 0,
     deleted_count: int = 0,
@@ -68,56 +37,43 @@ def record_history(
     scanned_count: int | None = None,
     extra: dict | None = None,
 ) -> bool:
-    """Persist a history entry."""
-    entry = make_history_entry(
-        workflow,
-        dry_run=dry_run,
-        status=status,
-        selected_count=selected_count,
-        deleted_count=deleted_count,
-        reclaimed_bytes=reclaimed_bytes,
-        scanned_count=scanned_count,
-        extra=extra,
-    )
-    return write_history_entry(entry)
-
-
-def get_progress_context(console: Console, transient: bool = True) -> Progress:
-    """Create a standard progress context for scanning operations."""
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=transient,
-    )
-
-
-def get_deletion_progress_context(console: Console) -> Progress:
-    """Create a standard progress context for deletion operations."""
-    return Progress(
-        SpinnerColumn(),
-        TextColumn("[bold red]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        console=console,
-    )
-
-
-def check_trash_availability(console: Console, use_trash: bool) -> bool:
-    """
-    Check if trash is available and warn if not.
-
-    Returns:
-        The effective use_trash value after checking availability.
-    """
-    if use_trash and not trash_available():
-        console.print(
-            "[yellow]Warning: Trash not available on this system. "
-            "Items will be permanently deleted.[/]"
+    return write_history_entry(
+        make_history_entry(
+            workflow,
+            status=status,
+            selected_count=selected_count,
+            deleted_count=deleted_count,
+            reclaimed_bytes=reclaimed_bytes,
+            scanned_count=scanned_count,
+            extra=extra,
         )
-        return False
-    return use_trash
+    )
+
+
+def record_cleanup(workflow, outcomes, use_trash, *, scanned_count=None):
+    """Record the same deletion accounting for scanned lists and the explorer."""
+    completed_bytes = sum(item.size for item, ok, _ in outcomes if ok)
+    return record_history(
+        workflow,
+        status="completed",
+        selected_count=len(outcomes),
+        deleted_count=sum(ok for _, ok, _ in outcomes),
+        reclaimed_bytes=0 if use_trash else completed_bytes,
+        scanned_count=scanned_count,
+        extra={
+            "use_trash": use_trash,
+            "moved_bytes": completed_bytes if use_trash else 0,
+        },
+    )
+
+
+def execute_items(items, use_trash, delete, update):
+    results = []
+    for index, item in enumerate(items):
+        update(f"{index + 1}/{len(items)} · {item.path}")
+        try:
+            ok, message = delete(item, use_trash)
+        except Exception as error:
+            ok, message = False, str(error)
+        results.append((item, ok, message))
+    return results

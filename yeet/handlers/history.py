@@ -6,7 +6,8 @@ import argparse
 
 from rich.console import Console
 
-from ..history import read_history, render_history
+from ..history import read_history
+from ..ui.history import render_history
 
 
 def handle_history(console: Console, args: argparse.Namespace) -> None:

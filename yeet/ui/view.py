@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
+from pathlib import Path
 
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.data_structures import Point
@@ -22,6 +24,17 @@ class ScreenView:
     row: Callable[[int], FormattedText]
     footer: FormattedText
     cursor: int = 0
+
+
+class PageHost(Protocol):
+    """A list that can retain its content and focus during a journey page."""
+
+    def screen_view(self) -> ScreenView: ...
+
+    def move(self, delta: int) -> None: ...
+
+    @property
+    def focused_path(self) -> Path | None: ...
 
 
 class RowControl(UIControl):

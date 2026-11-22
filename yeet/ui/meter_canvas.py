@@ -221,7 +221,6 @@ class BarCanvas:
                 right_start - left_end
             )
             qy = abs(y + 0.5 - cy) - hy
-            # Only the rounded corners and fractional edges differ from the flat fill.
             for x in corners:
                 qx = abs(x + 0.5 - cx) - hx
                 distance = (

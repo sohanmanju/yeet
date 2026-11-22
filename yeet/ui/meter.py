@@ -2,62 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from shutil import disk_usage
 
 from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.formatted_text import FormattedText
 
-from ..utils import DiskItem, LeftoverItem, PurgeArtifact, SelectableItem, format_size
+from ..formatting import format_size
 from .application import TerminalApplication
 from .geometry import content_width, fit, terminal_size
 from .meter_canvas import BarModel, CanvasSegment
 from .meter_pixels import graphics_supported
 
-PALETTE = ("#3b82f6", "#22c55e", "#22d3ee", "#8b5cf6", "#ec4899", "#eab308")
-MUTED = "#525252"
-GREEN = "#4ade80"
-
-# Applied after each screen's semantic styles to keep all interactive views cohesive.
-THEME = {
-    "brand": "bold #22d3ee",
-    "key": "#e6e6e6",
-    "dim": "#666666",
-    "detail": "#a3a3a3",
-    "status": "#22d3ee",
-    "menu-description": "#8c8c8c",
-    "menu-description-focus": "bg:#262626 #b5b5b5",
-    "section-header": "#8c8c8c",
-    "selection-hint": "#8c8c8c",
-    "breadcrumb": "#8c8c8c",
-    "breadcrumb-sep": "#525252",
-    "info-label": "#8c8c8c",
-    "info-value": "#d4d4d4",
-    "title": "bold #e6e6e6",
-    "header": "#8c8c8c",
-    "help": "#8c8c8c",
-    "normal": "#d4d4d4",
-    "selected": GREEN,
-    "cursor": "bg:#262626 #ffffff",
-    "cursor-selected": f"bg:#173326 {GREEN}",
-    "footer": "bold #e6e6e6",
-    "selection-summary": f"bold {GREEN}",
-    "breadcrumb-current": "bold #e6e6e6",
-    "path-size": "#8c8c8c",
-}
-
-
-@dataclass(frozen=True)
-class Segment:
-    label: str
-    size: int
-    color: str
-    id: str | None = None
-
-
-def meter_width() -> int:
-    return content_width()
+from .storage_model import Segment
+from .theme import MUTED, PALETTE
 
 
 def dot_meter(
@@ -75,7 +33,7 @@ def dot_meter(
     Cell centers determine ownership so rounding never overflows the meter.
     Unknown/negative sizes don't become filled space.
     """
-    width = meter_width() if width is None else max(0, width)
+    width = content_width() if width is None else max(0, width)
     total = max(0, total)
     app = get_app_or_none()
     if (
@@ -114,7 +72,6 @@ def dot_meter(
             color = next(
                 (color for end, color in boundaries if total and point < end), MUTED
             )
-            # Stable highlights give the dots texture without a redraw timer.
             highlight = color != MUTED and (column * 17 + row * 31) % 23 == 0
             lines.append(
                 (
@@ -129,7 +86,7 @@ def dot_meter(
 def legend(
     segments: list[Segment], *, width: int | None = None, focus: int | None = None
 ) -> FormattedText:
-    width = meter_width() if width is None else width
+    width = content_width() if width is None else width
     lines = [("", "  ")]
     used = 0
     if terminal_size().rows < 20 and len(segments) > 1:
@@ -227,32 +184,3 @@ class ScanBreakdown:
         lines.extend(legend(self.segments, focus=self.group_indices.get(focused_group)))
         lines.append(("", "\n"))
         return FormattedText(lines)
-
-
-_FILE_GROUPS = {
-    "Photos": ".jpg .jpeg .png .gif .webp .heic .heif .raw .cr2 .nef .tiff .tif .svg .avif .psd",
-    "Videos": ".mp4 .mov .mkv .avi .webm .m4v .mpg .mpeg .wmv",
-    "Music": ".mp3 .m4a .wav .flac .aac .ogg .aiff .alac",
-    "Archives": ".zip .tar .gz .bz2 .xz .7z .rar .zst .tgz",
-    "Installers": ".dmg .pkg .iso .img .msi",
-    "Apps": ".app .exe .apk .ipa .appimage",
-    "Developer": ".py .pyc .js .ts .tsx .jsx .rs .go .java .class .jar .o .a .so .dylib .wasm .sqlite .db",
-    "Documents": ".pdf .doc .docx .xls .xlsx .ppt .pptx .txt .md .csv .epub .pages .numbers .key",
-}
-_EXTENSION_GROUP = {
-    extension: group
-    for group, extensions in _FILE_GROUPS.items()
-    for extension in extensions.split()
-}
-
-
-def file_storage_group(item: SelectableItem | LeftoverItem | DiskItem) -> str:
-    """Use supplied app/project ownership, then file type; never guess an app."""
-    if isinstance(item, LeftoverItem) and item.app_hint:
-        return item.app_hint
-    for part in item.path.parts:
-        if part.lower().endswith(".app"):
-            return part[:-4]
-    if isinstance(item, PurgeArtifact):
-        return item.project_name
-    return _EXTENSION_GROUP.get(item.path.suffix.lower(), "Other files")

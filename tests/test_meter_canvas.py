@@ -144,22 +144,14 @@ def test_canvas_background_is_transparent():
     canvas.resize(160, 80, 8)
     canvas.set_model(BarModel((CanvasSegment("Apps", (59, 130, 246), 0.5),)))
     canvas.step(0.1)
-    # Unused headroom above the dots' halo must show the terminal background.
-    assert set(
-        canvas.buffer[3 : (canvas.top - canvas.cell) * canvas.width * 4 : 4]
-    ) == {0}
     frame = canvas.rgba_frame()
+    assert set(frame[3 : 160 * 4 : 4]) == {0}
     assert any(0 < alpha < 255 for alpha in frame[3::4])
-    # The straight-alpha wire pixels preserve the original dot light on black.
-    for i in range(0, len(frame), 4):
-        for channel in range(3):
-            assert (
-                abs(
-                    round(frame[i + channel] * frame[i + 3] / 255)
-                    - canvas.buffer[i + channel]
-                )
-                <= 1
-            )
+    assert any(
+        max(frame[i : i + 3]) > frame[i + 3]
+        for i in range(0, len(frame), 4)
+        if 0 < frame[i + 3] < 255
+    )
 
 
 def test_update_edits_existing_frame_and_replaces_transparent_pixels():

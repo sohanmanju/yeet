@@ -1,6 +1,9 @@
 """Tests for yeet.scanners module."""
 
 import tempfile
+from types import SimpleNamespace
+
+import pytest
 from pathlib import Path
 
 from yeet.scanners import (
@@ -12,7 +15,7 @@ from yeet.scanners import (
     InstallerScanner,
     LeftoverScanner,
 )
-from yeet.utils import CacheCategory, CacheScanResults, ProjectType
+from yeet.utils import CacheCategory, ProjectType
 
 
 class TestProjectScanner:
@@ -80,14 +83,11 @@ class TestProjectScanner:
             project_dir.mkdir()
             (project_dir / "pyproject.toml").write_text("[project]")
 
-            # Default threshold of 90 days, project was just created
             scanner = ProjectScanner(days_threshold=90, include_all=False)
             results = scanner.scan(Path(tmpdir))
 
-            # Should be empty because project is too new
             assert len(results.projects) == 0
 
-            # With include_all=True, should find it
             scanner_all = ProjectScanner(days_threshold=90, include_all=True)
             results_all = scanner_all.scan(Path(tmpdir))
             assert len(results_all.projects) == 1
@@ -120,9 +120,8 @@ class TestLargeFileScanner:
 
     def test_finds_large_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a file larger than 1 MB
             large_file = Path(tmpdir) / "large.bin"
-            large_file.write_bytes(b"x" * (1024 * 1024 + 1))  # 1 MB + 1 byte
+            large_file.write_bytes(b"x" * (1024 * 1024 + 1))
 
             scanner = LargeFileScanner(min_size_mb=1)
             results = scanner.scan(Path(tmpdir))
@@ -133,7 +132,6 @@ class TestLargeFileScanner:
 
     def test_ignores_small_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a small file
             small_file = Path(tmpdir) / "small.txt"
             small_file.write_text("hello")
 
@@ -144,9 +142,8 @@ class TestLargeFileScanner:
 
     def test_progress_callback_with_large_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a file larger than threshold to trigger callback
             large_file = Path(tmpdir) / "large.bin"
-            large_file.write_bytes(b"x" * (1024 * 1024 + 1))  # 1 MB + 1 byte
+            large_file.write_bytes(b"x" * (1024 * 1024 + 1))
 
             callback_calls = []
 
@@ -156,20 +153,11 @@ class TestLargeFileScanner:
             scanner = LargeFileScanner(min_size_mb=1)
             scanner.scan(Path(tmpdir), progress_callback=progress_cb)
 
-            # Callback should be called when large file is found
             assert len(callback_calls) > 0
 
 
 class TestCacheScanner:
     """Tests for CacheScanner class."""
-
-    def test_scan_returns_results(self):
-        scanner = CacheScanner()
-        results = scanner.scan()
-
-        assert isinstance(results, CacheScanResults)
-        assert isinstance(results.caches, list)
-        assert isinstance(results.total_size, int)
 
     def test_progress_callback(self, tmp_path):
         cache_dir = tmp_path / "cache"
@@ -191,56 +179,33 @@ class TestCacheScanner:
 
         assert callback_calls == [(1, "Temp Cache")]
 
-    def test_expand_candidate_paths_supports_globs(self, tmp_path):
+    def test_scan_discovers_globbed_icon_caches(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "Library" / "Caches" / "com.apple.iconservices.store"
         cache_dir.mkdir(parents=True)
-
+        (cache_dir / "data").write_bytes(b"cache")
         scanner = CacheScanner()
-        scanner.home = tmp_path
-
-        paths = scanner._expand_candidate_paths(
-            "Library/Caches/com.apple.iconservices*"
+        scanner.home, scanner.os_type = tmp_path, "darwin"
+        monkeypatch.setattr(
+            "yeet.scanners.cache.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(stdout=""),
         )
-
-        assert paths == [cache_dir]
-
-    def test_scan_marks_contents_only_candidates(self, tmp_path):
-        cache_dir = (
-            tmp_path
-            / "Library"
-            / "Containers"
-            / "com.example.app"
-            / "Data"
-            / "Library"
-            / "Caches"
-        )
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "cache.bin").write_bytes(b"x" * 2048)
-
-        scanner = CacheScanner()
-        scanner.home = tmp_path
-        scanner.os_type = "darwin"
-        scanner.CACHE_DEFINITIONS = []
-        scanner._extra_candidates = lambda: [
-            ("Sandboxed App Cache", CacheCategory.CONTAINER, cache_dir, True)
+        results = scanner.scan(min_size_mb=0)
+        assert [(cache.path, cache.size) for cache in results.caches] == [
+            (cache_dir.resolve(), 5)
         ]
 
-        results = scanner.scan(min_size_mb=0)
-
-        assert len(results.caches) == 1
-        assert results.caches[0].path == cache_dir
-        assert results.caches[0].delete_contents_only is True
-
-    def test_cache_definitions_exclude_non_cache_paths(self):
-        scanner = CacheScanner()
-        all_paths = {
-            path
-            for _, _, paths_by_os in scanner.CACHE_DEFINITIONS
-            for paths in paths_by_os.values()
-            for path in paths
-        }
-
-        disallowed_paths = {
+    @pytest.mark.parametrize(
+        "system,cache_relative",
+        [
+            ("darwin", "Library/Caches/pip"),
+            ("linux", ".cache/pip"),
+            ("windows", "AppData/Local/pip/Cache"),
+        ],
+    )
+    def test_scan_offers_caches_but_preserves_durable_user_data(
+        self, tmp_path, monkeypatch, system, cache_relative
+    ):
+        durable_paths = {
             "Library/Safari/LocalStorage",
             "Library/Developer/Xcode/Archives",
             "Library/Developer/Xcode/iOS DeviceSupport",
@@ -277,35 +242,49 @@ class TestCacheScanner:
             "Library/Application Support/Zed/languages",
             "Library/Safari/LocalStorage",
         }
+        for relative in durable_paths:
+            if relative.startswith("/"):
+                continue
+            path = tmp_path / relative
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "keep").write_text("user data")
+        cache_dir = tmp_path / cache_relative
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "cached").write_text("regenerable")
+        scanner = CacheScanner()
+        scanner.home, scanner.os_type = tmp_path, system
+        monkeypatch.setattr(
+            "yeet.scanners.cache.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(stdout=""),
+        )
+        results = scanner.scan(min_size_mb=0)
+        assert {cache.path for cache in results.caches} == {cache_dir.resolve()}
 
-        assert disallowed_paths.isdisjoint(all_paths)
-
-    def test_darwin_user_cache_paths_only_queries_cache_dir(
+    def test_scan_discovers_platform_cache_and_retains_its_parent(
         self, monkeypatch, tmp_path
     ):
         cache_dir = tmp_path / "darwin-cache"
         cache_dir.mkdir()
-
-        calls: list[list[str]] = []
-
-        class Result:
-            stdout = f"{cache_dir}\n"
-
-        def fake_run(cmd, capture_output, text, check):
-            calls.append(cmd)
-            assert cmd == ["getconf", "DARWIN_USER_CACHE_DIR"]
-            return Result()
-
+        (cache_dir / "data").write_bytes(b"cache")
         scanner = CacheScanner()
-        scanner.os_type = "darwin"
-        monkeypatch.setattr("yeet.scanners.cache.subprocess.run", fake_run)
+        scanner.home, scanner.os_type = tmp_path, "darwin"
+        monkeypatch.setattr(
+            "yeet.scanners.cache.subprocess.run",
+            lambda command, **kwargs: SimpleNamespace(
+                stdout=f"{cache_dir}\n"
+                if command == ["getconf", "DARWIN_USER_CACHE_DIR"]
+                else ""
+            ),
+        )
+        results = scanner.scan(min_size_mb=0)
+        assert [
+            (cache.path, cache.size, cache.delete_contents_only)
+            for cache in results.caches
+        ] == [(cache_dir.resolve(), 5, True)]
 
-        results = scanner._darwin_user_cache_paths()
-
-        assert calls == [["getconf", "DARWIN_USER_CACHE_DIR"]]
-        assert results == [("Darwin User Cache", CacheCategory.SYSTEM, cache_dir, True)]
-
-    def test_container_cache_paths_skip_tmp_candidates(self, tmp_path):
+    def test_scan_offers_container_caches_but_preserves_temporary_data(
+        self, tmp_path, monkeypatch
+    ):
         app_cache = (
             tmp_path
             / "Library"
@@ -333,13 +312,18 @@ class TestCacheScanner:
         scanner.home = tmp_path
         scanner.os_type = "darwin"
 
-        candidates = scanner._expand_container_cache_paths()
-        paths = {path for _, _, path, _ in candidates}
-
-        assert app_cache in paths
-        assert group_cache in paths
-        assert app_tmp not in paths
-        assert group_tmp not in paths
+        for directory in (app_cache, app_tmp, group_cache, group_tmp):
+            (directory / "data").write_text("keep parent")
+        monkeypatch.setattr(
+            "yeet.scanners.cache.subprocess.run",
+            lambda *a, **kw: SimpleNamespace(stdout=""),
+        )
+        results = scanner.scan(min_size_mb=0)
+        assert {cache.path for cache in results.caches} == {
+            app_cache.resolve(),
+            group_cache.resolve(),
+        }
+        assert all(cache.delete_contents_only for cache in results.caches)
 
 
 class TestDiskExplorer:
@@ -347,18 +331,16 @@ class TestDiskExplorer:
 
     def test_scan_directory_include_small(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create some files and directories
             (Path(tmpdir) / "file1.txt").write_text("hello")
             (Path(tmpdir) / "file2.txt").write_text("world")
             subdir = Path(tmpdir) / "subdir"
             subdir.mkdir()
             (subdir / "nested.txt").write_text("nested content")
 
-            # Use include_small=True to see all items
             explorer = DiskExplorer(min_size_bytes=0)
             items = explorer.scan_directory(Path(tmpdir), include_small=True)
 
-            assert len(items) == 3  # file1.txt, file2.txt, subdir
+            assert len(items) == 3
             names = [item.name for item in items]
             assert "file1.txt" in names
             assert "file2.txt" in names
@@ -366,34 +348,27 @@ class TestDiskExplorer:
 
     def test_scan_directory_filters_by_size(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a small file
             small = Path(tmpdir) / "small.txt"
             small.write_text("x")
 
             # Create a larger file (need larger for disk block size)
             large = Path(tmpdir) / "large.txt"
-            large.write_text("x" * 10000)  # 10KB content
+            large.write_text("x" * 10000)
 
-            # Scan with min size that filters small.txt but keeps large.txt
-            explorer = DiskExplorer(min_size_bytes=1000)
+            explorer = DiskExplorer(min_size_bytes=8192)
             items = explorer.scan_directory(Path(tmpdir))
 
-            # Should find the large file
             names = [item.name for item in items]
             assert "large.txt" in names
+            assert "small.txt" not in names
 
     def test_is_dangerous(self):
         explorer = DiskExplorer()
 
-        # System paths that are in DANGEROUS_PATHS should be dangerous
         assert explorer.is_dangerous(Path("/usr"))
         assert explorer.is_dangerous(Path("/System"))
 
-        # User paths should not be dangerous
         assert not explorer.is_dangerous(Path.home() / "Downloads")
-
-        # Root is not in DANGEROUS_PATHS (but direct children like /usr are)
-        # The implementation doesn't treat "/" itself as dangerous
 
     def test_get_cached_size_after_calculate(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -402,29 +377,24 @@ class TestDiskExplorer:
 
             explorer = DiskExplorer()
 
-            # Initially not cached
             assert explorer.get_cached_size(test_file) is None
 
-            # Calculate size to populate cache
             size = explorer.calculate_size(test_file)
 
-            # Now should be cached
             cached_size = explorer.get_cached_size(test_file)
             assert cached_size is not None
             assert cached_size == size
 
     def test_calculate_size_for_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create nested structure
-            (Path(tmpdir) / "a.txt").write_text("aaaa" * 1000)  # ~4KB
+            (Path(tmpdir) / "a.txt").write_text("aaaa" * 1000)
             subdir = Path(tmpdir) / "sub"
             subdir.mkdir()
-            (subdir / "b.txt").write_text("bb" * 1000)  # ~2KB
+            (subdir / "b.txt").write_text("bb" * 1000)
 
             explorer = DiskExplorer()
             size = explorer.calculate_size(Path(tmpdir))
 
-            # Size should be positive (using du command)
             assert size > 0
 
     def test_cache_save_and_load(self):
@@ -432,22 +402,18 @@ class TestDiskExplorer:
             with tempfile.TemporaryDirectory() as cache_dir:
                 cache_file = Path(cache_dir) / "test_cache.json"
 
-                # Create file and calculate its size to populate cache
                 explorer1 = DiskExplorer()
                 test_path = Path(tmpdir) / "test.txt"
                 test_path.write_text("test content here")
                 size = explorer1.calculate_size(test_path)
                 explorer1.save_cache(cache_file)
 
-                # Verify cache file exists
                 assert cache_file.exists()
 
-                # Load in new explorer
                 explorer2 = DiskExplorer()
                 loaded = explorer2.load_cache(cache_path=cache_file, max_age_hours=1)
 
                 assert loaded > 0
-                # The cached size should be available
                 assert explorer2.get_cached_size(test_path) == size
 
 

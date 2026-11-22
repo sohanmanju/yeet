@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import (
+from ..models import (
     DEFAULT_LARGE_FILE_MB,
     LargeFile,
     LargeFileScanResults,
@@ -23,7 +23,6 @@ class LargeFileScanner:
     space hogs like videos, disk images, build artifacts, etc.
     """
 
-    # Directories to skip entirely
     SKIP_DIRS = frozenset(
         {
             ".git",
@@ -32,7 +31,7 @@ class LargeFileScanner:
             ".venv",
             "venv",
             ".Trash",
-            "Library",  # macOS system
+            "Library",
             ".cache",
         }
     )
@@ -64,7 +63,6 @@ class LargeFileScanner:
         """
         results = LargeFileScanResults()
 
-        # BFS traversal
         dirs_to_scan: deque[Path] = deque([root])
 
         while dirs_to_scan:
@@ -78,7 +76,6 @@ class LargeFileScanner:
                             name = entry.name
 
                             if entry.is_dir(follow_symlinks=False):
-                                # Skip certain directories
                                 if name not in self.SKIP_DIRS and not name.startswith(
                                     "."
                                 ):
@@ -117,7 +114,6 @@ class LargeFileScanner:
                 results.scan_errors.append(f"{current_dir}: {e}")
                 continue
 
-        # Sort by size (largest first)
         results.files.sort(key=lambda f: f.size, reverse=True)
 
         return results

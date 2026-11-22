@@ -6,11 +6,13 @@ import os
 import subprocess
 import shutil
 from datetime import datetime
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 
-from ..utils import PROJECT_MARKERS, PurgeArtifact, PurgeScanResults
+from ..project_rules import contains_project_marker
+from ..filesystem import directory_stats
+
+from ..models import PurgeArtifact, PurgeScanResults
 
 
 class PurgeScanner:
@@ -44,7 +46,6 @@ class PurgeScanner:
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> PurgeScanResults:
         results = PurgeScanResults()
-        seen: set[Path] = set()
         scanned = 0
 
         for current_root, dirs, _ in os.walk(root):
@@ -54,10 +55,6 @@ class PurgeScanner:
                     continue
 
                 artifact_path = current_path / dirname
-                if artifact_path in seen:
-                    continue
-
-                seen.add(artifact_path)
                 dirs.remove(dirname)
                 scanned += 1
 
@@ -102,17 +99,10 @@ class PurgeScanner:
         return self._fallback_size(path)
 
     def _fallback_size(self, path: Path) -> int:
-        total = 0
         try:
-            for root, _, files in os.walk(path):
-                for name in files:
-                    try:
-                        total += (Path(root) / name).stat().st_size
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-        return total
+            return directory_stats(path).size
+        except OSError:
+            return 0
 
     def _find_project_root(self, path: Path, root: Path) -> Path:
         current = path.parent
@@ -126,12 +116,7 @@ class PurgeScanner:
 
     def _looks_like_project(self, path: Path) -> bool:
         try:
-            entries = {entry.name for entry in os.scandir(path)}
-        except (OSError, PermissionError):
+            with os.scandir(path) as entries:
+                return contains_project_marker({entry.name for entry in entries})
+        except OSError:
             return False
-
-        for marker in PROJECT_MARKERS:
-            for entry in entries:
-                if fnmatch(entry, marker):
-                    return True
-        return False

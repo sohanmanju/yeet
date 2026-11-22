@@ -4,19 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from typing import Generic
+from pathlib import Path
 
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 
-from ..utils import format_size
+from ..formatting import format_size
 from .application import TerminalApplication
 from .chrome import key_hints, screen_title
 from .geometry import content_width, fit, single_line, terminal_size
-from .meter import THEME, ScanBreakdown
+from .meter import ScanBreakdown
+from .theme import THEME
 from .responsive import TableSchema, table_line
-from .selection_model import SectionRow, SelectionRow, T
+from .selection_model import SectionRow, SelectionRow, SelectionState, T
 from .view import ScreenView, ViewLayout
 
 
@@ -31,6 +33,7 @@ class SelectionEngine(Generic[T]):
         open_item: Callable[[T], tuple[bool, str]] | None = None,
         extra_help: str = "",
     ) -> None:
+        self._view = ViewLayout(self._get_content)
         self.rows = tuple(rows)
         self.schema, self.title, self.noun = schema, title, noun
         self.open_item = open_item
@@ -50,6 +53,32 @@ class SelectionEngine(Generic[T]):
             self.display_rows.append(row)
             previous_section = row.section
 
+    @property
+    def focused_path(self) -> Path | None:
+        return self.rows[self.cursor].value.path if self.rows else None
+
+    def selection_state(self) -> SelectionState:
+        return SelectionState(
+            frozenset(
+                row.value.path for row in self.rows if row.index in self.selected
+            ),
+            self.focused_path,
+            self.cursor,
+        )
+
+    def restore_selection(self, state: SelectionState) -> None:
+        self.selected = {
+            row.index for row in self.rows if row.value.path in state.selected_paths
+        }
+        self.cursor = next(
+            (
+                i
+                for i, row in enumerate(self.rows)
+                if row.value.path == state.focused_path
+            ),
+            min(state.position, max(0, len(self.rows) - 1)),
+        )
+
     def move(self, delta: int) -> None:
         self.cursor = max(0, min(len(self.rows) - 1, self.cursor + delta))
 
@@ -66,9 +95,6 @@ class SelectionEngine(Generic[T]):
 
     def _get_header(self) -> FormattedText:
         return FormattedText([("class:header", "  " + table_line(self.schema))])
-
-    def _get_row(self, index: int) -> FormattedText:
-        return self.render_item(self.rows[index])
 
     def render_item(self, row: SelectionRow[T]) -> FormattedText:
         selected = row.index in self.selected
@@ -99,6 +125,9 @@ class SelectionEngine(Generic[T]):
             )
         return FormattedText([("", "  "), *self.render_item(row)])
 
+    def screen_view(self) -> ScreenView:
+        return self._get_content()
+
     def _get_content(self) -> ScreenView:
         focused = self.rows[self.cursor] if self.rows else None
         header = list(screen_title(self.title))
@@ -118,7 +147,7 @@ class SelectionEngine(Generic[T]):
             )
         ]
         if focused and terminal_size().rows >= 20:
-            path = getattr(focused.value, "path", focused.name)
+            path = focused.value.path
             footer.append(
                 ("class:detail", "  " + fit(str(path), content_width()).rstrip() + "\n")
             )
@@ -223,7 +252,7 @@ class SelectionEngine(Generic[T]):
         if not self.rows:
             return []
         self.cancelled = False
-        view = ViewLayout(self._get_content)
+        view = self._view
         app = TerminalApplication(
             layout=view.layout,
             key_bindings=self.key_bindings(),
@@ -237,7 +266,12 @@ class SelectionEngine(Generic[T]):
             color_depth=ColorDepth.TRUE_COLOR,
             mouse_support=True,
         )
-        app.run()
+        app.run(
+            pre_run=lambda: setattr(
+                view.body, "vertical_scroll", getattr(self, "_scroll", 0)
+            )
+        )
+        self._scroll = view.body.vertical_scroll
         if self.cancelled:
             return []
         return [

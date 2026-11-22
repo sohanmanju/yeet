@@ -7,7 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import InstallerItem, InstallerScanResults
+from ..filesystem import directory_stats
+
+from ..models import InstallerItem, InstallerScanResults
 
 
 class InstallerScanner:
@@ -43,8 +45,6 @@ class InstallerScanner:
         ".iso",
     )
 
-    MIN_SIZE_BYTES = 25 * 1024 * 1024
-
     def scan(
         self,
         root: Path | None = None,
@@ -76,7 +76,6 @@ class InstallerScanner:
     ) -> None:
         try:
             for current_root, dirs, files in os.walk(root):
-                # Don't dive too deep into caches for homebrew / mail downloads.
                 dirs[:] = [d for d in dirs if not d.startswith(".")]
 
                 current_path = Path(current_root)
@@ -150,14 +149,7 @@ class InstallerScanner:
         return Path(name).suffix.lower() or "—"
 
     def _get_directory_size(self, path: Path) -> int:
-        total = 0
         try:
-            for root, _, files in os.walk(path):
-                for name in files:
-                    try:
-                        total += (Path(root) / name).stat().st_size
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-        return total
+            return directory_stats(path).size
+        except OSError:
+            return 0

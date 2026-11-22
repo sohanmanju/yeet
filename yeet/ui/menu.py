@@ -15,7 +15,8 @@ from prompt_toolkit.utils import get_cwidth
 from .application import TerminalApplication
 from .chrome import key_hints
 from .geometry import content_width, fit
-from .meter import THEME, disk_overview
+from .meter import disk_overview
+from .theme import THEME
 from .view import ScreenView, ViewLayout
 
 

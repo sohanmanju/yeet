@@ -40,7 +40,7 @@ A decorative reskin alone would leave those problems in place.
    this first presentation pass.
 2. **Add decision context.** Expand the focused row with measured share of the
    current scope, known activity dates, ownership, and the actual removal method.
-   Carry trash/permanent/dry-run state from handlers into the selector before
+   Carry trash/permanent state from handlers into the selector before
    displaying action-specific copy. Do not infer that a large or old item is junk.
 3. **Extend in-screen scanning to cleanup workflows.** The explorer now streams
    directory batches. Other workflows should render incremental results with a clear

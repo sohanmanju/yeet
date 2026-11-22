@@ -25,7 +25,7 @@ Browse your filesystem interactively, sorted by size. A visual disk usage analyz
 ### History
 Review past cleanup runs from `~/.config/yeet/history.jsonl`.
 
-- Tracks workflow, selection counts, deletions, reclaimed space, and dry-run status
+- Tracks workflow, selection counts, deletions, reclaimed space and bytes moved to Trash
 - Shows recent runs in a compact terminal table
 
 ### Stale Projects Scanner
@@ -74,7 +74,6 @@ Run workflows directly from the CLI for scripting and automation.
 
 - `--workflow` selects a single workflow without the interactive menu
 - `--json` emits scan results as JSON and exits
-- `--dry-run` previews deletions without modifying anything
 - `--history` shows the cleanup history view and exits
 
 ### Installer Cleanup
@@ -149,9 +148,6 @@ yeet --workflow installer --json ~/Downloads
 yeet --workflow leftovers --json
 yeet --workflow files --json ~/Downloads
 yeet --workflow history
-
-# Preview deletions without changing anything
-yeet --dry-run
 
 # Review past cleanup runs
 yeet --history
@@ -308,3 +304,21 @@ Contributions are welcome! Feel free to:
 ## Author
 
 Created by [sohanmanju](https://github.com/sohanmanju)
+
+### Cohesive cleanup journey
+
+Directory entry, scanning, selection, deletion review, progress, and results use
+the same full-screen terminal layout. Review lists every selected path and its
+size. Use ↑/↓ to inspect items, Tab or ←/→ to choose an action, and Enter to
+activate it. Back is selected by default; Escape returns to the unchanged list.
+
+Deletion review, progress, and results stay within the active list layout, with inline actions and status. Results show every success and failure. Continue refreshes the directory and
+keeps failed items selected for retry. Choose another directory stays in the
+same workflow; Main menu switches workflows. System-wide workflows offer Scan
+again for their fixed locations.
+
+Trash operations report bytes moved, not recovered disk space. If Trash is
+unavailable, permanent deletion requires explicit confirmation; execution
+never silently switches operations. Configured and built-in protected paths
+remain blocked. Cache contents-only cleanup retains the parent directory,
+and Xcode cleanup explicitly uses permanent deletion.

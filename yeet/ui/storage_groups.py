@@ -1,6 +1,6 @@
 """Stable folder-content categories, independent of file rank and cursor."""
 
-from .meter import Segment, file_storage_group
+from .storage_model import Segment, file_storage_group
 
 # Match fix-storage's category language where it applies. Directories stay
 # explicitly Folders: their contents have not been classified recursively.

@@ -7,7 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from ..utils import LeftoverItem, LeftoverScanResults
+from ..filesystem import directory_stats
+
+from ..models import LeftoverItem, LeftoverScanResults
 
 
 class LeftoverScanner:
@@ -97,9 +99,8 @@ class LeftoverScanner:
 
     def _matches_installed_app(self, name: str) -> bool:
         lowered = name.casefold()
-        stem = lowered.removesuffix(".plist")
         for installed in self.installed_apps:
-            if installed in lowered or installed in stem:
+            if installed in lowered:
                 return True
         return False
 
@@ -112,20 +113,7 @@ class LeftoverScanner:
         return stem
 
     def _get_size(self, path: Path) -> int:
-        if path.is_file():
-            try:
-                return path.stat().st_size
-            except (OSError, PermissionError):
-                return 0
-
-        total = 0
         try:
-            for root, _, files in os.walk(path):
-                for fname in files:
-                    try:
-                        total += (Path(root) / fname).stat().st_size
-                    except (OSError, PermissionError):
-                        continue
-        except (OSError, PermissionError):
-            pass
-        return total
+            return path.stat().st_size if path.is_file() else directory_stats(path).size
+        except OSError:
+            return 0

@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from ..utils import (
+from ..models import (
     CacheLocation,
     LeftoverItem,
     Project,
     SelectableItem,
     XcodeItem,
     XcodeItemType,
-    format_days_ago,
-    open_path,
 )
-from .meter import file_storage_group
+from ..formatting import format_days_ago
+from ..filesystem import open_path
+from .storage_model import file_storage_group
 from .selection import SelectionEngine
 from .selection_model import SelectionRow
 from .table_schemas import CACHES, FILES, PROJECTS, XCODE
@@ -161,27 +161,3 @@ class XcodeSelector(SelectionEngine[XcodeItem]):
             open_item=lambda item: open_path(item.path),
             extra_help="[Latest] marks the newest version; select-all keeps it",
         )
-
-
-def select_projects_interactive(
-    projects: list[Project], title: str = "Select projects to delete"
-) -> list[Project]:
-    return InteractiveSelector(projects, title).run()
-
-
-def select_files_interactive(
-    files: list[FileItem], title: str = "Select files to delete"
-) -> list[FileItem]:
-    return DeletionItemSelector(files, title).run()
-
-
-def select_caches_interactive(
-    caches: list[CacheLocation], title: str = "Select caches to clear"
-) -> list[CacheLocation]:
-    return CacheSelector(caches, title).run()
-
-
-def select_xcode_items_interactive(
-    items: list[XcodeItem], title: str = "Select Xcode items to delete"
-) -> list[XcodeItem]:
-    return XcodeSelector(items, title).run()

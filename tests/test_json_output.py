@@ -3,6 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
+
 from yeet.json_output import (
     project_scan_payload,
     disk_scan_payload,
@@ -54,23 +55,39 @@ def test_project_scan_payload_serializes_projects():
     assert payload["projects"][0]["project_type"] == "node"
 
 
-def test_disk_scan_payload_serializes_items():
-    now = datetime.now()
+def test_disk_payload_exports_only_measured_items_in_size_order():
+    now = datetime(2026, 1, 2, 3, 4, 5)
     items = [
-        DiskItem(
-            path=Path("/tmp/file.txt"),
-            name="file.txt",
-            size=4096,
-            is_dir=False,
-            modified=now,
-        )
+        DiskItem(Path("/data/small"), "small", 1, False, now),
+        DiskItem(Path("/data/loading"), "loading", -1, True, now),
+        DiskItem(Path("/data/empty"), "empty", 0, False, now),
+        DiskItem(Path("/data/large"), "large", 2, True, now),
     ]
+    payload = disk_scan_payload(Path("/data"), items)
 
-    payload = disk_scan_payload(Path("/tmp"), items, 4096)
-
-    assert payload["root_path"] == "/tmp"
-    assert payload["items"][0]["name"] == "file.txt"
-    assert payload["items"][0]["is_dir"] is False
+    assert set(payload) == {"scan_date", "root_path", "total_size", "items"}
+    datetime.fromisoformat(payload["scan_date"])
+    assert payload["root_path"] == "/data"
+    assert payload["total_size"] == 3
+    assert payload["items"] == [
+        {
+            "path": "/data/large",
+            "name": "large",
+            "size": 2,
+            "is_dir": True,
+            "modified": now.isoformat(),
+            "percent_of_parent": 66.67,
+        },
+        {
+            "path": "/data/small",
+            "name": "small",
+            "size": 1,
+            "is_dir": False,
+            "modified": now.isoformat(),
+            "percent_of_parent": 33.33,
+        },
+    ]
+    assert disk_scan_payload(Path("/data"), [])["items"] == []
 
 
 def test_purge_scan_payload_serializes_artifacts():

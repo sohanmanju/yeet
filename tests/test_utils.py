@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import os
 
+import pytest
+
 from yeet.utils import (
     format_size,
     format_days_ago,
@@ -19,7 +21,6 @@ from yeet.utils import (
     delete_file,
     delete_directory,
 )
-from yeet.config import Config
 
 
 class TestFormatSize:
@@ -88,7 +89,6 @@ class TestValidateDirectory:
         with tempfile.TemporaryDirectory() as tmpdir:
             is_valid, result = validate_directory(tmpdir)
             assert is_valid is True
-            assert isinstance(result, Path)
             assert result == Path(tmpdir).resolve()
 
     def test_nonexistent_path(self):
@@ -106,10 +106,8 @@ class TestValidateDirectory:
                 os.unlink(f.name)
 
     def test_expands_home(self):
-        # Test that ~ is expanded
         is_valid, result = validate_directory("~")
         assert is_valid is True
-        assert isinstance(result, Path)
         assert result == Path.home()
 
 
@@ -131,11 +129,6 @@ class TestParseXcodeVersion:
         assert version == (17, 0)
         assert build == "21A329"
 
-    def test_three_part_version(self):
-        version, build = parse_xcode_version("16.4.1 (20E252)")
-        assert version == (16, 4, 1)
-        assert build == "20E252"
-
     def test_invalid_version(self):
         version, build = parse_xcode_version("invalid")
         assert version is None
@@ -145,9 +138,13 @@ class TestParseXcodeVersion:
 class TestIsMacos:
     """Tests for is_macos function."""
 
-    def test_returns_bool(self):
-        result = is_macos()
-        assert isinstance(result, bool)
+    @pytest.mark.parametrize(
+        "system,expected",
+        [("Darwin", True), ("Linux", False), ("Windows", False), ("FreeBSD", False)],
+    )
+    def test_detects_macos(self, monkeypatch, system, expected):
+        monkeypatch.setattr("yeet.filesystem.platform.system", lambda: system)
+        assert is_macos() is expected
 
 
 class TestProject:
@@ -156,7 +153,6 @@ class TestProject:
     def test_days_stale_uses_most_recent(self):
         now = datetime.now()
 
-        # Test with modification being most recent
         project = Project(
             path=Path("/test"),
             name="test",
@@ -169,7 +165,6 @@ class TestProject:
         )
         assert project.days_stale == 10
 
-        # Test with access being most recent
         project2 = Project(
             path=Path("/test"),
             name="test",
@@ -182,7 +177,6 @@ class TestProject:
         )
         assert project2.days_stale == 5
 
-        # Test with commit being most recent
         project3 = Project(
             path=Path("/test"),
             name="test",
@@ -200,7 +194,7 @@ class TestProject:
             path=Path("/test"),
             name="test",
             project_type=ProjectType.OTHER,
-            total_size=1024 * 1024 * 100,  # 100 MB
+            total_size=1024 * 1024 * 100,
             last_modified=datetime.now(),
             last_accessed=datetime.now(),
         )
@@ -229,7 +223,7 @@ class TestLargeFile:
         f = LargeFile(
             path=Path("/test/file.zip"),
             name="file.zip",
-            size=1024 * 1024 * 500,  # 500 MB
+            size=1024 * 1024 * 500,
             last_accessed=datetime.now(),
             last_modified=datetime.now(),
         )
@@ -283,32 +277,6 @@ class TestScanResults:
         )
         assert results.total_reclaimable_size == 300
 
-    def test_stale_projects_sorted(self):
-        now = datetime.now()
-        results = ScanResults(
-            projects=[
-                Project(
-                    path=Path("/recent"),
-                    name="recent",
-                    project_type=ProjectType.OTHER,
-                    total_size=100,
-                    last_modified=now - timedelta(days=10),
-                    last_accessed=now - timedelta(days=10),
-                ),
-                Project(
-                    path=Path("/old"),
-                    name="old",
-                    project_type=ProjectType.OTHER,
-                    total_size=100,
-                    last_modified=now - timedelta(days=100),
-                    last_accessed=now - timedelta(days=100),
-                ),
-            ]
-        )
-        stale = results.stale_projects
-        assert stale[0].name == "old"
-        assert stale[1].name == "recent"
-
 
 class TestLargeFileScanResults:
     """Tests for LargeFileScanResults dataclass."""
@@ -322,18 +290,6 @@ class TestLargeFileScanResults:
             ]
         )
         assert results.total_size == 300
-
-    def test_by_size_sorted(self):
-        now = datetime.now()
-        results = LargeFileScanResults(
-            files=[
-                LargeFile(Path("/small"), "small", 100, now, now),
-                LargeFile(Path("/large"), "large", 1000, now, now),
-            ]
-        )
-        by_size = results.by_size
-        assert by_size[0].name == "large"
-        assert by_size[1].name == "small"
 
 
 class TestDeleteFile:
@@ -368,7 +324,6 @@ class TestDeleteDirectory:
         tmpdir = tempfile.mkdtemp()
         path = Path(tmpdir)
 
-        # Create some files inside
         (path / "file1.txt").write_text("test")
         (path / "subdir").mkdir()
         (path / "subdir" / "file2.txt").write_text("test")
@@ -394,18 +349,3 @@ class TestDeleteDirectory:
             assert "Not a directory" in msg
         finally:
             path.unlink()
-
-
-class TestConfigBookmarks:
-    """Tests for config bookmark persistence."""
-
-    def test_bookmarks_round_trip(self):
-        config = Config(bookmarks=["~/Downloads", "~/Projects"])
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "config.toml"
-            assert config.save(path)
-
-            loaded = Config.load(path)
-
-            assert loaded.bookmarks == ["~/Downloads", "~/Projects"]

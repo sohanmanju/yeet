@@ -1,15 +1,11 @@
-"""Handler for disk explorer workflow."""
+"""Disk explorer cleanup journey and non-interactive export."""
 
 from __future__ import annotations
 
-import argparse
 import json
-from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.prompt import Confirm
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -20,220 +16,143 @@ from rich.progress import (
 )
 
 from ..config import get_config
-from ..scanner import DiskExplorer
-from ..utils import format_size, SIZE_LOADING
-
-from .common import (
-    delete_item,
-    get_deletion_progress_context,
-    check_trash_availability,
-    record_history,
+from ..json_output import disk_scan_payload
+from ..scanners import DiskExplorer
+from ..formatting import format_size
+from ..models import SIZE_LOADING
+from ..filesystem import trash_available, validate_directory
+from ..ui.journey import (
+    BusyScreen,
+    ReviewItem,
+    ReviewScreen,
+    ResultsScreen,
+    choose_directory,
+    confirm_dangerous,
 )
+from .common import delete_item, execute_items, record_history, record_cleanup
 
 
-def handle_disk_explorer(console: Console, args: argparse.Namespace) -> None:
-    """Handle the disk explorer workflow."""
+def handle_disk_explorer(console, args):
     from ..ui.explorer import DiskExplorerUI
-    from ..utils import validate_directory
 
-    # Get config for settings
     config = get_config()
-    dry_run = getattr(args, "dry_run", False)
-    json_mode = getattr(args, "json", False)
     start_path = Path(config.start_path).expanduser()
-    use_trash = (
-        config.use_trash
-        if json_mode
-        else check_trash_availability(console, config.use_trash)
-    )
-
-    # Create explorer using config settings
+    if getattr(args, "directory", None):
+        valid, value = validate_directory(args.directory)
+        if not valid:
+            console.print(f"[red]Error:[/] {value}")
+            return
+        start_path = value
+    if getattr(args, "json", False):
+        export_disk_scan(start_path, "-")
+        return
     explorer = DiskExplorer(
         min_size_bytes=config.min_size_mb * 1024 * 1024,
         ignored_paths=[Path(path) for path in config.ignored_paths],
     )
-
-    # Load cached sizes for faster startup
     if config.cache_enabled:
-        loaded = explorer.load_cache(max_age_hours=config.cache_max_age_hours)
-        if loaded > 0:
-            console.print(f"[dim]Loaded {loaded} cached sizes[/]")
-
-    if json_mode:
-        if args.directory:
-            is_valid, result = validate_directory(args.directory)
-            if not is_valid:
-                console.print(f"[red]Error:[/] {result}")
-                return
-            root_path = result
-        else:
-            root_path = start_path
-
-        export_disk_scan(root_path, "-")
-        return
-
-    console.print("\n[dim]Starting disk explorer...[/]")
-
+        explorer.load_cache(max_age_hours=config.cache_max_age_hours)
     ui = DiskExplorerUI(explorer, start_path=start_path)
+    refresh = True
+    try:
+        while True:
+            selected = ui.run(refresh=refresh)
+            refresh = False
+            if not selected:
+                return
 
-    # Run the explorer
-    selected_paths = ui.run()
+            paths = sorted(selected)
+            paths = [
+                path
+                for path in paths
+                if not any(parent in selected for parent in path.parents)
+            ]
 
-    # Save cache for next time
-    if config.cache_enabled:
-        explorer.save_cache()
+            def measure(update):
+                unknown = [
+                    path
+                    for path in paths
+                    if path.is_dir() and explorer.get_cached_size(path) is None
+                ]
+                explorer.calculate_sizes_parallel(
+                    unknown, callback=lambda path, size: update(str(path))
+                )
+                rows = []
+                for path in paths:
+                    try:
+                        size = (
+                            explorer.get_cached_size(path)
+                            if path.is_dir()
+                            else path.lstat().st_size
+                        )
+                    except OSError:
+                        size = 0
+                    rows.append(ReviewItem(path, max(0, size or 0)))
+                return rows
 
-    if not selected_paths:
-        console.print("\n[dim]No items selected for deletion.[/]")
-        record_history(
-            "explore",
-            dry_run=dry_run,
-            status="no-selection",
-            selected_count=0,
-            scanned_count=len(explorer._size_cache),
-        )
-        return
-
-    # Calculate total size
-    total_size = sum(explorer.get_cached_size(p) or 0 for p in selected_paths)
-
-    # Check for dangerous paths
-    dangerous_paths = [p for p in selected_paths if explorer.is_dangerous(p)]
-
-    if dangerous_paths:
-        console.print("\n[bold red]WARNING: You are about to delete system paths:[/]")
-        for p in dangerous_paths:
-            console.print(f"  [red]{p}[/]")
-        console.print("\n[bold red]This may break your system or applications![/]")
-
-        confirm_text = console.input("\n[bold red]Type 'yes' to confirm: [/]")
-        if confirm_text.strip().lower() != "yes":
-            console.print("[yellow]Deletion cancelled.[/]")
-            record_history(
-                "explore",
-                dry_run=dry_run,
-                status="cancelled",
-                selected_count=len(selected_paths),
-                scanned_count=len(explorer._size_cache),
-                extra={"found_count": len(selected_paths)},
+            items = (
+                BusyScreen("Preparing deletion review", str(ui.current_path))
+                .within(ui)
+                .run(measure)
             )
-            return
-
-    # Determine action text based on trash setting
-    if dry_run:
-        action_verb = "would move to trash" if use_trash else "would delete permanently"
-        action_noun = "Would move to trash" if use_trash else "Would delete"
-    else:
-        action_verb = "move to trash" if use_trash else "delete permanently"
-        action_noun = "Moved to trash" if use_trash else "Deleted"
-    size_label = "Potential space reclaimed" if dry_run else "Space reclaimed"
-
-    # Show confirmation
-    console.print(
-        Panel(
-            f"[bold red]About to {action_verb} {len(selected_paths)} item(s):[/]\n\n"
-            + "\n".join(
-                f"  - {p} ({format_size(explorer.get_cached_size(p) or 0)})"
-                for p in sorted(selected_paths)[:10]
+            unavailable = config.use_trash and not trash_available()
+            use_trash = config.use_trash and not unavailable
+            if (
+                ReviewScreen(
+                    items,
+                    use_trash,
+                    str(ui.current_path),
+                    trash_unavailable=unavailable,
+                )
+                .within(ui)
+                .run()
+                != "confirm"
+            ):
+                record_history("explore", status="cancelled", selected_count=len(items))
+                continue
+            dangerous = [path for path in paths if explorer.is_dangerous(path)]
+            if dangerous and not confirm_dangerous(dangerous):
+                continue
+            outcomes = (
+                BusyScreen(
+                    "Moving to Trash" if use_trash else "Permanently deleting",
+                    str(ui.current_path),
+                )
+                .within(ui)
+                .run(
+                    lambda update: execute_items(
+                        items,
+                        use_trash,
+                        lambda item, trash: delete_item(
+                            item.path, trash, config=config
+                        ),
+                        update,
+                    )
+                )
             )
-            + (
-                f"\n  ... and {len(selected_paths) - 10} more"
-                if len(selected_paths) > 10
-                else ""
-            )
-            + f"\n\n[bold]{size_label}:[/] [green]{format_size(total_size)}[/]",
-            title="Deletion Summary",
-            border_style="red",
-        )
-    )
+            record_cleanup("explore", outcomes, use_trash)
+            ui.selected = {item.path for item, ok, _ in outcomes if not ok}
 
-    # Use appropriate confirmation message
-    confirm_msg = (
-        "[bold red]Are you sure you want to move these items to trash?[/]"
-        if use_trash
-        else "[bold red]Are you sure you want to delete these items permanently?[/]"
-    )
-
-    if not Confirm.ask(
-        confirm_msg,
-        default=False,
-        console=console,
-    ):
-        console.print("[yellow]Deletion cancelled.[/]")
-        record_history(
-            "explore",
-            dry_run=dry_run,
-            status="cancelled",
-            selected_count=len(selected_paths),
-            scanned_count=len(explorer._size_cache),
-            extra={"found_count": len(selected_paths)},
-        )
-        return
-
-    # Perform deletions
-    deleted_count = 0
-    failed_count = 0
-    reclaimed_size = 0
-
-    if dry_run:
-        action_word = "Would move to trash" if use_trash else "Would delete"
-    else:
-        action_word = "Moving to trash" if use_trash else "Deleting"
-
-    with get_deletion_progress_context(console) as progress:
-        task = progress.add_task(f"{action_word}...", total=len(selected_paths))
-
-        for path in selected_paths:
-            progress.update(task, description=f"{action_word}: {path.name}")
-            size = explorer.get_cached_size(path) or 0
-
-            success, msg = delete_item(path, use_trash, dry_run=dry_run, config=config)
-
-            if success:
-                deleted_count += 1
-                reclaimed_size += size
-            else:
-                failed_count += 1
-                console.print(f"[red]Failed:[/] {path} - {msg}")
-
-            progress.advance(task)
-
-    # Show results
-    console.print()
-    result_title = "Cleanup Summary"
-    result_action = action_noun
-
-    result_text = (
-        f"[bold]{result_action} Complete[/]\n\n"
-        f"  Items {result_action.lower()}: [green]{deleted_count}[/]"
-        f"{f' ([red]{failed_count} failed[/])' if failed_count else ''}\n\n"
-        f"  [bold green]{size_label}: {format_size(reclaimed_size)}[/]"
-    )
-
-    if use_trash and deleted_count > 0 and not dry_run:
-        result_text += (
-            "\n\n[dim]Items moved to trash. You can restore them from "
-            "your system trash if needed.[/]"
-        )
-
-    console.print(
-        Panel(
-            result_text,
-            title=result_title,
-            border_style="green",
-        )
-    )
-
-    record_history(
-        "explore",
-        dry_run=dry_run,
-        status="completed",
-        selected_count=len(selected_paths),
-        deleted_count=deleted_count,
-        reclaimed_bytes=reclaimed_size,
-        scanned_count=len(explorer._size_cache),
-        extra={"found_count": len(selected_paths)},
-    )
+            for item, ok, _ in outcomes:
+                if ok:
+                    explorer.invalidate_cache(item.path)
+            result_page = ResultsScreen(
+                outcomes, use_trash, str(ui.current_path)
+            ).within(ui)
+            while True:
+                choice = result_page.run()
+                if choice in ("back", "menu"):
+                    return
+                if choice == "directory":
+                    root = choose_directory(ui.current_path)
+                    if root is None:
+                        continue
+                    ui = DiskExplorerUI(explorer, start_path=root)
+                refresh = True
+                break
+    finally:
+        if config.cache_enabled:
+            explorer.save_cache()
 
 
 def export_disk_scan(path: Path, output: str) -> None:
@@ -246,15 +165,13 @@ def export_disk_scan(path: Path, output: str) -> None:
         path: Directory to scan
         output: Output file path, or "-" for stdout
     """
-    # Use stderr for progress when outputting to stdout
+
     console = Console(stderr=True) if output == "-" else Console()
 
-    # Create explorer with no minimum size for export (include everything)
     explorer = DiskExplorer(min_size_bytes=0)
 
     console.print(f"\n[bold blue]Scanning:[/] {path}")
 
-    # Scan the directory
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -268,7 +185,6 @@ def export_disk_scan(path: Path, output: str) -> None:
 
         items = explorer.scan_directory(path, include_small=True)
 
-        # Get paths that need size calculation
         paths_to_calculate = [
             item.path for item in items if item.is_dir and item.size == SIZE_LOADING
         ]
@@ -290,14 +206,12 @@ def export_disk_scan(path: Path, output: str) -> None:
                     description=f"Calculating sizes... ({calculated_count}/{total_count})",
                 )
 
-            # Calculate sizes in parallel
             explorer.calculate_sizes_parallel(
                 paths_to_calculate,
                 callback=on_size_calculated,
                 max_workers=4,
             )
 
-            # Update items with calculated sizes
             for item in items:
                 if item.is_dir and item.size == SIZE_LOADING:
                     cached_size = explorer.get_cached_size(item.path)
@@ -306,48 +220,17 @@ def export_disk_scan(path: Path, output: str) -> None:
 
         progress.update(scan_task, completed=100, total=100)
 
-    # Calculate total size
-    total_size = sum(item.size for item in items if item.size > 0)
+    export_data = disk_scan_payload(path, items)
 
-    # Build export data
-    export_items = []
-    for item in items:
-        if item.size <= 0:
-            continue
-
-        percent_of_parent = (item.size / total_size * 100) if total_size > 0 else 0
-
-        export_items.append(
-            {
-                "path": str(item.path),
-                "name": item.name,
-                "size": item.size,
-                "is_dir": item.is_dir,
-                "modified": item.modified.isoformat() if item.modified else None,
-                "percent_of_parent": round(percent_of_parent, 2),
-            }
-        )
-
-    # Sort by size descending
-    export_items.sort(key=lambda x: x["size"], reverse=True)
-
-    export_data = {
-        "scan_date": datetime.now().isoformat(),
-        "root_path": str(path),
-        "total_size": total_size,
-        "items": export_items,
-    }
-
-    # Output JSON
     json_output = json.dumps(export_data, indent=2)
 
     if output == "-":
-        # Write to stdout
         print(json_output)
     else:
-        # Write to file
         output_path = Path(output)
         output_path.write_text(json_output)
         console.print(f"\n[bold green]Exported to:[/] {output_path}")
-        console.print(f"  Total size: [cyan]{format_size(total_size)}[/]")
-        console.print(f"  Items: [cyan]{len(export_items)}[/]")
+        console.print(
+            f"  Total size: [cyan]{format_size(export_data['total_size'])}[/]"
+        )
+        console.print(f"  Items: [cyan]{len(export_data['items'])}[/]")

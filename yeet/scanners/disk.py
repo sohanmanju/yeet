@@ -14,7 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
-from ..utils import SIZE_LOADING, DiskItem
+from ..models import SIZE_LOADING, DiskItem
+from ..safety import BUILTIN_DANGEROUS_PATHS, matches_path
 
 
 class DiskExplorer:
@@ -28,27 +29,8 @@ class DiskExplorer:
     - Warning for dangerous system paths
     """
 
-    # Paths that should trigger a warning before deletion
-    DANGEROUS_PATHS = frozenset(
-        {
-            "/System",
-            "/usr",
-            "/bin",
-            "/sbin",
-            "/var",
-            "/etc",
-            "/Applications",
-            "/Library",
-            "/private",
-            "/Users/Shared",
-            "/.Spotlight-V100",
-            "/.fseventsd",
-            "/cores",
-            "/opt",
-        }
-    )
+    DANGEROUS_PATHS = frozenset(str(path) for path in BUILTIN_DANGEROUS_PATHS)
 
-    # Paths to completely hide (not useful for cleanup)
     HIDDEN_SYSTEM_PATHS = frozenset(
         {
             "/dev",
@@ -61,13 +43,10 @@ class DiskExplorer:
         }
     )
 
-    # Default minimum size: 5 MB
     DEFAULT_MIN_SIZE = 5 * 1024 * 1024
 
-    # Default cache file path
     DEFAULT_CACHE_PATH = Path.home() / ".cache" / "yeet" / "sizes.json"
 
-    # Maximum number of entries in size cache (LRU eviction)
     MAX_CACHE_SIZE = 10000
 
     def __init__(
@@ -85,8 +64,10 @@ class DiskExplorer:
         self.ignored_paths = [
             path.expanduser().resolve() for path in ignored_paths or []
         ]
-        # Use OrderedDict for LRU cache behavior
+
         self._size_cache: OrderedDict[str, int] = OrderedDict()
+        self._cache_lock = threading.RLock()
+        self._cache_generation = 0
         self._active_processes: list[subprocess.Popen] = []
         self._process_lock = threading.Lock()
 
@@ -132,7 +113,6 @@ class DiskExplorer:
                         if self._is_ignored(Path(entry.path)):
                             continue
 
-                        # Skip hidden system paths
                         if self.is_hidden_system(Path(entry.path)):
                             continue
 
@@ -140,13 +120,11 @@ class DiskExplorer:
                         modified = datetime.fromtimestamp(stat.st_mtime)
 
                         if entry.is_dir(follow_symlinks=False):
-                            # Check cache first
-                            cached_size = self._size_cache.get(entry.path)
+                            cached_size = self.get_cached_size(Path(entry.path))
                             size = (
                                 cached_size if cached_size is not None else SIZE_LOADING
                             )
 
-                            # Skip small directories if we know their size
                             if (
                                 not include_small
                                 and size != SIZE_LOADING
@@ -165,10 +143,8 @@ class DiskExplorer:
                                 )
                             )
                         elif entry.is_file(follow_symlinks=False):
-                            # Use st_blocks for actual disk usage (handles sparse files)
                             size = stat.st_blocks * 512
 
-                            # Skip small files
                             if not include_small and size < self.min_size_bytes:
                                 continue
 
@@ -197,7 +173,6 @@ class DiskExplorer:
         except (OSError, PermissionError):
             pass
 
-        # Sort: known sizes first (largest to smallest), then loading items
         items.sort(
             key=lambda x: (
                 x.size == SIZE_LOADING,
@@ -218,7 +193,7 @@ class DiskExplorer:
             return False
         normalized = path.expanduser().resolve()
         for candidate in self.ignored_paths:
-            if normalized == candidate or candidate in normalized.parents:
+            if matches_path(normalized, candidate):
                 return True
         return False
 
@@ -239,23 +214,21 @@ class DiskExplorer:
         """
         path_str = str(path)
 
-        # Check cache first (and mark as recently used)
-        if path_str in self._size_cache:
-            self._size_cache.move_to_end(path_str)
-            return self._size_cache[path_str]
+        with self._cache_lock:
+            generation = self._cache_generation
+            if path_str in self._size_cache:
+                self._size_cache.move_to_end(path_str)
+                return self._size_cache[path_str]
 
         total = 0
 
         try:
             if path.is_file():
                 stat = path.stat()
-                # Use st_blocks for actual disk usage (handles sparse files)
+
                 # st_blocks is in 512-byte units
                 total = stat.st_blocks * 512
             elif path.is_dir():
-                # Use du command - much faster than Python os.walk
-                # -s: summarize (total only)
-                # -k: output in KB
                 # Note: du may return non-zero exit code due to permission errors
                 # but still output the size, so we check stdout regardless
                 proc = subprocess.Popen(
@@ -264,33 +237,34 @@ class DiskExplorer:
                     stderr=subprocess.PIPE,
                     text=True,
                 )
-                # Track the process so it can be killed on shutdown
+
                 with self._process_lock:
                     self._active_processes.append(proc)
                 try:
                     stdout, _ = proc.communicate(timeout=60)
                     if stdout:
-                        # Parse output: "12345\t/path/to/dir"
                         try:
                             size_kb = stdout.split()[0]
                             total = int(size_kb) * 1024
                         except (ValueError, IndexError):
                             pass
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.communicate()
+                    raise
                 finally:
-                    # Remove from active processes
                     with self._process_lock:
                         if proc in self._active_processes:
                             self._active_processes.remove(proc)
         except (OSError, PermissionError, subprocess.TimeoutExpired, ValueError):
             pass
 
-        # Cache the result with LRU eviction
-        self._size_cache[path_str] = total
-        # Move to end (most recently used)
-        self._size_cache.move_to_end(path_str)
-        # Evict oldest entries if cache is too large
-        while len(self._size_cache) > self.MAX_CACHE_SIZE:
-            self._size_cache.popitem(last=False)
+        with self._cache_lock:
+            if generation == self._cache_generation:
+                self._size_cache[path_str] = total
+                self._size_cache.move_to_end(path_str)
+                while len(self._size_cache) > self.MAX_CACHE_SIZE:
+                    self._size_cache.popitem(last=False)
         return total
 
     def is_dangerous(self, path: Path) -> bool:
@@ -305,11 +279,9 @@ class DiskExplorer:
         """
         path_str = str(path)
 
-        # Check exact matches
         if path_str in self.DANGEROUS_PATHS:
             return True
 
-        # Check if path starts with dangerous paths
         for dangerous in self.DANGEROUS_PATHS:
             if path_str.startswith(dangerous + "/"):
                 # Only first level is dangerous
@@ -341,7 +313,9 @@ class DiskExplorer:
 
     def clear_cache(self) -> None:
         """Clear the size cache."""
-        self._size_cache.clear()
+        with self._cache_lock:
+            self._cache_generation += 1
+            self._size_cache.clear()
 
     def kill_active_processes(self) -> int:
         """
@@ -352,6 +326,8 @@ class DiskExplorer:
         Returns:
             Number of processes killed
         """
+        with self._cache_lock:
+            self._cache_generation += 1
         killed = 0
         with self._process_lock:
             for proc in self._active_processes:
@@ -373,7 +349,8 @@ class DiskExplorer:
         Returns:
             Cached size in bytes, or None
         """
-        return self._size_cache.get(str(path))
+        with self._cache_lock:
+            return self._size_cache.get(str(path))
 
     def save_cache(self, cache_path: Path | None = None) -> bool:
         """
@@ -389,14 +366,14 @@ class DiskExplorer:
             cache_path = self.DEFAULT_CACHE_PATH
 
         try:
-            # Create parent directories if needed
             cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-            cache_data = {
-                "version": 1,
-                "timestamp": datetime.now().isoformat(),
-                "sizes": self._size_cache,
-            }
+            with self._cache_lock:
+                cache_data = {
+                    "version": 1,
+                    "timestamp": datetime.now().isoformat(),
+                    "sizes": dict(self._size_cache),
+                }
 
             with open(cache_path, "w") as f:
                 json.dump(cache_data, f)
@@ -421,6 +398,8 @@ class DiskExplorer:
         if cache_path is None:
             cache_path = self.DEFAULT_CACHE_PATH
 
+        with self._cache_lock:
+            generation = self._cache_generation
         try:
             if not cache_path.exists():
                 return 0
@@ -428,13 +407,11 @@ class DiskExplorer:
             with open(cache_path, "r") as f:
                 cache_data = json.load(f)
 
-            # Validate structure
             if not isinstance(cache_data, dict):
                 return 0
             if "sizes" not in cache_data or not isinstance(cache_data["sizes"], dict):
                 return 0
 
-            # Check cache age
             timestamp_str = cache_data.get("timestamp")
             if timestamp_str:
                 try:
@@ -445,8 +422,7 @@ class DiskExplorer:
                 except (ValueError, TypeError):
                     pass
 
-            # Load entries, validating each one
-            loaded_count = 0
+            loaded = {}
             for path_str, size in cache_data["sizes"].items():
                 if not isinstance(size, int):
                     continue
@@ -456,23 +432,23 @@ class DiskExplorer:
                     if not path.exists():
                         continue
 
-                    # Check if directory mtime changed (invalidates cache)
-                    if path.is_dir():
-                        # Skip validation for now - just load if exists
-                        pass
-
-                    self._size_cache[path_str] = size
-                    loaded_count += 1
+                    loaded[path_str] = size
                 except (OSError, PermissionError):
                     continue
 
-            return loaded_count
+            with self._cache_lock:
+                if generation != self._cache_generation:
+                    return 0
+                self._size_cache.update(loaded)
+                while len(self._size_cache) > self.MAX_CACHE_SIZE:
+                    self._size_cache.popitem(last=False)
+            return len(loaded)
         except (OSError, PermissionError, json.JSONDecodeError, TypeError):
             return 0
 
     def invalidate_cache(self, path: Path) -> None:
         """
-        Remove a specific path and all its children from the cache.
+        Invalidate a changed path, its descendants, and ancestor totals.
 
         Args:
             path: Path to invalidate
@@ -480,16 +456,17 @@ class DiskExplorer:
         path_str = str(path)
         path_prefix = path_str + "/"
 
-        # Find all keys to remove
-        keys_to_remove = [
-            key
-            for key in self._size_cache
-            if key == path_str or key.startswith(path_prefix)
-        ]
-
-        # Remove them
-        for key in keys_to_remove:
-            del self._size_cache[key]
+        with self._cache_lock:
+            self._cache_generation += 1
+            keys_to_remove = [
+                key
+                for key in self._size_cache
+                if key == path_str
+                or key.startswith(path_prefix)
+                or Path(key) in path.parents
+            ]
+            for key in keys_to_remove:
+                del self._size_cache[key]
 
     def calculate_sizes_parallel(
         self,
@@ -518,38 +495,31 @@ class DiskExplorer:
         if not paths:
             return results
 
-        # Use a non-blocking approach so we can check stop_event
         executor = ThreadPoolExecutor(max_workers=max_workers)
         try:
-            # Submit all tasks
             future_to_path = {
                 executor.submit(self.calculate_size, path): path for path in paths
             }
 
-            # Process results as they complete
             for future in as_completed(future_to_path):
-                # Check if we should stop
                 if stop_event is not None and stop_event.is_set():
-                    # Cancel remaining futures
                     for f in future_to_path:
                         f.cancel()
                     break
 
                 path = future_to_path[future]
                 try:
-                    size = future.result(timeout=0.1)
+                    size = future.result()
                     results[path] = size
                     if callback is not None:
                         callback(path, size)
                 except Exception as e:
-                    # Log the error and continue with other paths
                     logging.debug(f"Error calculating size for {path}: {e}")
-                    # Store 0 for failed paths so caller knows it was processed
+
                     results[path] = 0
                     if callback is not None:
                         callback(path, 0)
         finally:
-            # Shutdown without waiting - let threads die naturally
             executor.shutdown(wait=False, cancel_futures=True)
 
         return results
@@ -579,17 +549,13 @@ class DiskExplorer:
         """
         results: dict[Path, int] = {}
 
-        # Convert to sets for efficient lookup
         all_paths_set = set(paths)
         priority_set = set(priority_paths)
 
-        # Ensure priority paths are in the paths list
         priority_to_process = [p for p in priority_paths if p in all_paths_set]
 
-        # Remaining paths (not in priority)
         remaining_paths = [p for p in paths if p not in priority_set]
 
-        # Process priority paths first
         if priority_to_process:
             if stop_event is not None and stop_event.is_set():
                 return results
@@ -598,7 +564,6 @@ class DiskExplorer:
             )
             results.update(priority_results)
 
-        # Then process remaining paths
         if remaining_paths:
             if stop_event is not None and stop_event.is_set():
                 return results

@@ -7,129 +7,72 @@ from collections import deque
 from pathlib import Path
 
 from prompt_toolkit import Application
-from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 
 from ..config import get_config
-from ..scanner import DiskExplorer
-from ..utils import (
-    SIZE_LOADING,
-    DiskItem,
-    format_size,
-    open_path,
-)
+from ..scanners.disk import DiskExplorer
+from ..models import SIZE_LOADING, DiskItem
+from ..formatting import format_size
+from ..filesystem import open_path
 from . import explorer_render
 from .application import TerminalApplication
 from .geometry import terminal_size
-from .meter import THEME
+from .theme import THEME
 from .view import ScreenView, ViewLayout
 
 
 class DiskExplorerUI:
-    """
-    Interactive disk explorer with directory traversal.
-
-    Features:
-    - Navigate directories by size
-    - Select items across directory traversals
-    - Lazy loading of directory sizes
-    - Breadcrumb navigation
-    - Info panel for detailed item information
-    - Filter by name or age
-    - File type breakdown
-    - Bookmarks for quick navigation
-
-    Controls:
-        - Up/Down or j/k: Navigate
-        - g/G: Go to top/bottom
-        - Ctrl+U/Page Up: Move up 10 items
-        - Ctrl+D/Page Down: Move down 10 items
-        - Enter or l: Open directory
-        - Backspace or h: Go to parent
-        - Space: Toggle selection
-        - d: Delete selected items
-        - v: View selection list
-        - o: Open in Finder
-        - i: Toggle info panel
-        - s: Cycle sort mode
-        - t: Toggle showing small items
-        - e: Show file type breakdown
-        - f: Start filter mode
-        - ~: Jump to home directory
-        - /: Jump to root
-        - r: Refresh current directory
-        - b: Jump to next bookmark
-        - B: Bookmark current directory
-        - ?: Show help
-        - q: Quit
-    """
-
     def __init__(
         self,
         explorer: DiskExplorer,
         start_path: Path = Path("/"),
     ) -> None:
-        """
-        Initialize the disk explorer UI.
-
-        Args:
-            explorer: DiskExplorer instance for scanning
-            start_path: Starting directory path
-        """
         self.explorer = explorer
         self._config = get_config()
         self.current_path = start_path
-        self.history: deque[Path] = deque(maxlen=100)  # Bounded history
+        self.history: deque[Path] = deque(maxlen=100)
         self.items: list[DiskItem] = []
         self.cursor: int = 0
-        self.selected: set[Path] = set()  # Persists across navigation
+        self.selected: set[Path] = set()
         self.show_small_items: bool = False
-        self.sort_mode: str = "size"  # "size", "name", "modified"
+        self.sort_mode: str = "size"
         self.status_message: str = ""
         self.cancelled: bool = False
 
-        # For lazy loading
         self._loading_thread: threading.Thread | None = None
         self._stop_loading = threading.Event()
         self._scan_generation = 0
         self.listing = False
         self.pending_entries = 0
 
-        # Filter state
         self.filter_mode: bool = False
         self.filter_text: str = ""
-        self.filtered_items: list[DiskItem] | None = None  # None = no filter active
+        self._name_filter = ""
 
-        # Age filter state
         self.age_filter_mode: bool = False
-        self.age_filter_days: int | None = None  # None = no age filter active
-        self.age_filter_input: str = ""  # For building the input
+        self.age_filter_days: int | None = None
+        self.age_filter_input: str = ""
 
-        # Extensions overlay state
         self.show_extensions: bool = False
         self.overlay_cursor = 0
 
-        # Help overlay
         self.show_help: bool = False
 
-        # Info panel state
         self.show_info_panel: bool = False
 
-        # Bookmarks
         self.bookmarks: list[Path] = [
             Path(path).expanduser() for path in self._config.bookmarks
         ]
 
-        # Quit warning state
         self._quit_warned: bool = False
 
-        # Application reference for triggering refreshes from background thread
         self._app: Application | None = None
+        self._view = ViewLayout(self.screen_view)
 
     def _scan_current_directory(self) -> None:
-        """Scan the current directory and update items list."""
         self._stop_loading.set()
         self._scan_generation += 1
         generation = self._scan_generation
@@ -139,7 +82,6 @@ class DiskExplorerUI:
             path = self.current_path
             loop = app.loop
             self.items = []
-            self.filtered_items = None
             self.listing = True
             self.pending_entries = 0
 
@@ -154,7 +96,6 @@ class DiskExplorerUI:
                 self.listing = pending > 0
                 self.pending_entries = pending
                 self._sort_items()
-                self._apply_filter()
                 visible = self._get_display_items()
                 self.cursor = next(
                     (i for i, item in enumerate(visible) if item.path == focused),
@@ -189,13 +130,10 @@ class DiskExplorerUI:
         )
         self._sort_items()
 
-        # Start lazy loading for directories with unknown sizes
         self._start_lazy_loading()
 
     def _sort_items(self) -> None:
-        """Sort items according to current sort mode."""
         if self.sort_mode == "size":
-            # Known sizes first (largest to smallest), then loading
             self.items.sort(
                 key=lambda x: (
                     x.size == SIZE_LOADING,
@@ -207,60 +145,38 @@ class DiskExplorerUI:
         elif self.sort_mode == "modified":
             self.items.sort(key=lambda x: x.modified, reverse=True)
 
-    def _apply_filter(self) -> None:
-        """Apply the current name filter to items."""
-        if not self.filter_text:
-            self.filtered_items = None
-        else:
-            pattern = self.filter_text.lower()
-            self.filtered_items = [
-                item
-                for item in self.items
-                if pattern in item.name.lower() or pattern in str(item.path).lower()
-            ]
-        # Re-apply age filter on top if active
-        self._apply_age_filter()
-        self.cursor = 0
-
-    def _apply_age_filter(self) -> None:
-        """Apply the age filter to items."""
-        if self.age_filter_days is None:
-            return
-
-        # Get the base list to filter (either already name-filtered or all items)
-        base_items = (
-            self.filtered_items if self.filtered_items is not None else self.items
-        )
-
-        # Filter to show only items where days_since_modified >= age_filter_days
-        self.filtered_items = [
+    @property
+    def filtered_items(self) -> list[DiskItem] | None:
+        if not self._name_filter and self.age_filter_days is None:
+            return None
+        return [
             item
-            for item in base_items
-            if item.days_since_modified >= self.age_filter_days
+            for item in self.items
+            if (
+                not self._name_filter
+                or self._name_filter in item.name.lower()
+                or self._name_filter in str(item.path).lower()
+            )
+            and (
+                self.age_filter_days is None
+                or item.days_since_modified >= self.age_filter_days
+            )
         ]
 
+    def _apply_filter(self) -> None:
+        self._name_filter = self.filter_text.lower()
+        self.cursor = 0
+
     def _clear_filter(self) -> None:
-        """Clear the active name filter."""
-        self.filter_text = ""
-        self.filtered_items = None
-        # Re-apply age filter if still active
-        if self.age_filter_days is not None:
-            self._apply_age_filter()
+        self.filter_text = self._name_filter = ""
         self.cursor = 0
 
     def _clear_age_filter(self) -> None:
-        """Clear the age filter."""
         self.age_filter_days = None
         self.age_filter_input = ""
-        # Re-apply name filter only if active
-        if self.filter_text:
-            self._apply_filter()
-        else:
-            self.filtered_items = None
         self.cursor = 0
 
     def _get_display_items(self) -> list[DiskItem]:
-        """Get the items to display (filtered by name and/or age, or all)."""
         items = self.filtered_items if self.filtered_items is not None else self.items
         if self.show_small_items:
             return items
@@ -305,14 +221,12 @@ class DiskExplorerUI:
             self.status_message = f"Bookmark is not a directory: {target}"
 
     def _start_lazy_loading(self) -> None:
-        """Start background thread to calculate directory sizes using parallel scanning."""
-        # Stop any existing loading
+
         self._stop_loading.set()
         # Each scan owns its cancellation flag. Reusing and clearing the old
         # event lets stale workers update a new directory; joining blocks keys.
         stop_event = self._stop_loading = threading.Event()
 
-        # Find items that need size calculation
         items_to_load = [
             item for item in self.items if item.is_dir and item.size == SIZE_LOADING
         ]
@@ -320,10 +234,8 @@ class DiskExplorerUI:
         if not items_to_load:
             return
 
-        # Build a mapping from path to item for quick lookup
         path_to_item = {item.path: item for item in items_to_load}
 
-        # Calculate which items are currently visible (dynamic viewport based on terminal)
         term_height = terminal_size().rows
         viewport_size = max(5, term_height - 16)
         total = len(self.items)
@@ -336,7 +248,6 @@ class DiskExplorerUI:
             if end - start < viewport_size:
                 start = max(0, end - viewport_size)
 
-        # Get visible items that are still loading
         visible_items = [
             item
             for item in self.items[start:end]
@@ -363,7 +274,7 @@ class DiskExplorerUI:
                         )
                         path_to_item[path].size = size
                         self._sort_items()
-                        # Resort progressively, keeping focus on the same path.
+
                         visible = self._get_display_items()
                         self.cursor = next(
                             (
@@ -396,39 +307,26 @@ class DiskExplorerUI:
         self._loading_thread = threading.Thread(target=load_sizes, daemon=True)
         self._loading_thread.start()
 
-    def _get_breadcrumbs(self, max_width: int = 70) -> FormattedText:
-        return explorer_render.get_breadcrumbs(self, max_width=max_width)
+    @property
+    def focused_path(self) -> Path | None:
+        items = self._get_display_items()
+        return items[self.cursor].path if self.cursor < len(items) else None
 
-    def _get_parent_total_size(self) -> int | None:
-        return explorer_render.get_parent_total_size(self)
-
-    def _get_item_info(self, item: DiskItem) -> FormattedText:
-        return explorer_render.get_item_info(self, item)
-
-    def _get_header(self) -> FormattedText:
-        return explorer_render.get_header(self)
-
-    def _get_row(
-        self,
-        idx: int,
-        display_items: list[DiskItem],
-    ) -> FormattedText:
-        return explorer_render.get_row(self, idx, display_items)
-
-    def _calculate_extension_stats(self) -> list[tuple[str, int, int]]:
-        return explorer_render.calculate_extension_stats(self)
-
-    def _get_extensions_content(self) -> FormattedText:
-        return explorer_render.get_extensions_content(self)
-
-    def _get_help_content(self) -> FormattedText:
-        return explorer_render.get_help_content(self)
-
-    def _get_content(self) -> ScreenView:
+    def screen_view(self) -> ScreenView:
         return explorer_render.get_content(self)
 
+    def move(self, delta: int) -> None:
+        if self.show_help or self.show_extensions:
+            count = explorer_render.overlay_length(self)
+            self.overlay_cursor = max(
+                0, min(max(0, count - 1), self.overlay_cursor + delta)
+            )
+        else:
+            self.cursor = max(
+                0, min(max(0, len(self._get_display_items()) - 1), self.cursor + delta)
+            )
+
     def navigate_into(self, item: DiskItem) -> None:
-        """Navigate into a directory."""
         if not item.is_dir:
             self.status_message = "Cannot open: not a directory"
             return
@@ -441,7 +339,6 @@ class DiskExplorerUI:
         self.status_message = ""
 
     def navigate_back(self) -> None:
-        """Navigate to parent directory."""
         if self.history:
             self.current_path = self.history.pop()
         else:
@@ -455,7 +352,6 @@ class DiskExplorerUI:
         self.status_message = ""
 
     def navigate_to(self, path: Path) -> None:
-        """Navigate directly to a specific path."""
         if path.is_dir():
             self.history.append(self.current_path)
             self.current_path = path
@@ -465,7 +361,6 @@ class DiskExplorerUI:
             self.status_message = ""
 
     def toggle_selection(self) -> None:
-        """Toggle selection of current item."""
         display_items = self._get_display_items()
         if not display_items or self.cursor >= len(display_items):
             return
@@ -477,7 +372,6 @@ class DiskExplorerUI:
             self.selected.add(item.path)
 
     def cycle_sort_mode(self) -> None:
-        """Cycle through sort modes."""
         modes = ["size", "name", "modified"]
         current_idx = modes.index(self.sort_mode)
         self.sort_mode = modes[(current_idx + 1) % len(modes)]
@@ -485,7 +379,6 @@ class DiskExplorerUI:
         self.status_message = f"Sort by: {self.sort_mode}"
 
     def toggle_small_items(self) -> None:
-        """Toggle showing small items."""
         self.show_small_items = not self.show_small_items
         self._scan_current_directory()
         if self.show_small_items:
@@ -496,64 +389,30 @@ class DiskExplorerUI:
             )
 
     def refresh(self) -> None:
-        """Refresh current directory."""
         self._scan_current_directory()
         self.status_message = "Refreshed"
 
-    def run(self) -> set[Path]:
-        """
-        Run the interactive explorer.
-
-        Returns:
-            Set of paths selected for deletion, or empty set if cancelled.
-        """
-        # Key bindings
+    def key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
+        commands = Condition(lambda: not (self.filter_mode or self.age_filter_mode))
 
-        @kb.add("up")
-        @kb.add("k")
+        @kb.add("up", filter=commands)
+        @kb.add("k", filter=commands)
         def move_up(event):
-            if self.show_help or self.show_extensions:
-                self.overlay_cursor = max(
-                    0,
-                    min(
-                        explorer_render.overlay_length(self) - 1,
-                        self.overlay_cursor - 1,
-                    ),
-                )
-                return
-            if self.filter_mode or self.age_filter_mode:
-                return
-            display_items = self._get_display_items()
-            if display_items:
-                self.cursor = max(0, self.cursor - 1)
+            self.move(-1)
 
-        @kb.add("down")
-        @kb.add("j")
+        @kb.add("down", filter=commands)
+        @kb.add("j", filter=commands)
         def move_down(event):
-            if self.show_help or self.show_extensions:
-                self.overlay_cursor = max(
-                    0,
-                    min(
-                        explorer_render.overlay_length(self) - 1,
-                        self.overlay_cursor + 1,
-                    ),
-                )
-                return
-            if self.filter_mode or self.age_filter_mode:
-                return
-            display_items = self._get_display_items()
-            if display_items:
-                self.cursor = min(len(display_items) - 1, self.cursor + 1)
+            self.move(1)
 
         @kb.add("enter")
         def open_dir_or_apply_filter(event):
             if self.age_filter_mode:
-                # Apply age filter and exit age filter mode
                 if self.age_filter_input:
                     try:
                         self.age_filter_days = int(self.age_filter_input)
-                        self._apply_age_filter()
+                        self.cursor = 0
                         self.status_message = (
                             f"Showing items older than {self.age_filter_days} days"
                         )
@@ -563,7 +422,6 @@ class DiskExplorerUI:
                 self.age_filter_input = ""
                 return
             if self.filter_mode:
-                # Apply filter and exit filter mode
                 self._apply_filter()
                 self.filter_mode = False
                 return
@@ -575,12 +433,8 @@ class DiskExplorerUI:
                 else:
                     self.status_message = "Cannot open: not a directory"
 
-        @kb.add("l")
+        @kb.add("l", filter=commands)
         def open_dir(event):
-            if self.filter_mode:
-                # Add 'l' to filter text
-                self.filter_text += "l"
-                return
             display_items = self._get_display_items()
             if display_items and self.cursor < len(display_items):
                 item = display_items[self.cursor]
@@ -592,76 +446,55 @@ class DiskExplorerUI:
         @kb.add("backspace")
         def backspace_handler(event):
             if self.age_filter_mode:
-                # Delete last character in age filter input
                 self.age_filter_input = self.age_filter_input[:-1]
                 return
             if self.filter_mode:
-                # Delete last character in filter
                 self.filter_text = self.filter_text[:-1]
                 return
             self.navigate_back()
 
-        @kb.add("h")
+        @kb.add("h", filter=commands)
         def go_back(event):
-            if self.filter_mode:
-                # Add 'h' to filter text
-                self.filter_text += "h"
-                return
             self.navigate_back()
 
-        @kb.add("space")
+        @kb.add("space", filter=commands)
         def toggle_select(event):
             self.toggle_selection()
 
-        @kb.add("*")
+        @kb.add("*", filter=commands)
         def select_all_visible(event):
-            """Select all visible items."""
-            if self.filter_mode or self.age_filter_mode:
-                return
             display_items = self._get_display_items()
             for item in display_items:
                 self.selected.add(item.path)
             self.status_message = f"Selected {len(display_items)} items"
 
-        @kb.add("u")
+        @kb.add("u", filter=commands)
         def deselect_all(event):
-            """Deselect all items."""
-            if self.filter_mode:
-                self.filter_text += "u"
-                return
-            if self.age_filter_mode:
-                return
             count = len(self.selected)
             self.selected.clear()
             self.status_message = f"Deselected {count} items"
 
-        @kb.add("s")
+        @kb.add("s", filter=commands)
         def cycle_sort(event):
             self.cycle_sort_mode()
 
-        @kb.add("t")
+        @kb.add("t", filter=commands)
         def toggle_small(event):
             self.toggle_small_items()
 
-        @kb.add("r")
+        @kb.add("r", filter=commands)
         def refresh_dir(event):
             self.refresh()
 
-        @kb.add("b")
+        @kb.add("b", filter=commands)
         def go_next_bookmark(event):
-            if self.filter_mode:
-                self.filter_text += "b"
-                return
             self._go_to_next_bookmark()
 
-        @kb.add("B")
+        @kb.add("B", filter=commands)
         def bookmark_current(event):
-            if self.filter_mode:
-                self.filter_text += "B"
-                return
             self._bookmark_current_path()
 
-        @kb.add("o")
+        @kb.add("o", filter=commands)
         def open_in_finder(event):
             display_items = self._get_display_items()
             if display_items and self.cursor < len(display_items):
@@ -669,167 +502,103 @@ class DiskExplorerUI:
                 _success, msg = open_path(item.path)
                 self.status_message = msg
 
-        @kb.add("~")
+        @kb.add("~", filter=commands)
         def go_home(event):
             self.navigate_to(Path.home())
 
-        @kb.add("/")
+        @kb.add("/", filter=commands)
         def go_root(event):
             self.navigate_to(Path("/"))
 
-        @kb.add("v")
+        @kb.add("v", filter=commands)
         def view_selection(event):
             if self.selected:
-                self._show_selection_view()
+                self.status_message = (
+                    f"Selection: {len(self.selected)} items - press [d] to delete"
+                )
 
-        @kb.add("d")
+        @kb.add("d", filter=commands)
         def delete_selected(event):
             if self.selected:
                 event.app.exit(result="delete")
 
-        @kb.add("e")
+        @kb.add("e", filter=commands)
         def toggle_extensions(event):
-            if self.filter_mode:
-                self.filter_text += "e"
-                return
-            if self.age_filter_mode:
-                return
             self.overlay_cursor = 0
             self.show_extensions = not self.show_extensions
 
-        @kb.add("f")
+        @kb.add("f", filter=commands)
         def start_filter(event):
-            if self.filter_mode or self.age_filter_mode:
-                if self.filter_mode:
-                    self.filter_text += "f"
-                return
             self.filter_mode = True
             self.filter_text = ""
 
-        @kb.add("c")
+        @kb.add("c", filter=commands)
         def clear_filter(event):
-            if self.filter_mode:
-                self.filter_text += "c"
-                return
-            if self.age_filter_mode:
-                return
             if self.filtered_items is not None or self.filter_text:
                 self._clear_filter()
                 self.status_message = "Name filter cleared"
 
-        @kb.add("a")
+        @kb.add("a", filter=commands)
         def start_age_filter(event):
-            if self.filter_mode:
-                self.filter_text += "a"
-                return
-            if self.age_filter_mode:
-                return
             self.age_filter_mode = True
             self.age_filter_input = ""
 
-        @kb.add("A")
+        @kb.add("A", filter=commands)
         def clear_age_filter(event):
-            if self.filter_mode:
-                self.filter_text += "A"
-                return
-            if self.age_filter_mode:
-                return
             if self.age_filter_days is not None:
                 self._clear_age_filter()
                 self.status_message = "Age filter cleared"
 
-        @kb.add("g")
+        @kb.add("g", filter=commands)
         def go_to_top(event):
-            """Go to top of list."""
-            if self.filter_mode:
-                self.filter_text += "g"
-                return
-            if self.age_filter_mode:
-                return
-            self.cursor = 0
+            self.move(-max(len(self.items), explorer_render.overlay_length(self)))
 
-        @kb.add("G")
+        @kb.add("G", filter=commands)
         def go_to_bottom(event):
-            """Go to bottom of list."""
-            if self.filter_mode:
-                self.filter_text += "G"
-                return
-            if self.age_filter_mode:
-                return
-            display_items = self._get_display_items()
-            if display_items:
-                self.cursor = len(display_items) - 1
+            self.move(max(len(self.items), explorer_render.overlay_length(self)))
 
-        @kb.add("c-u")
-        @kb.add("pageup")
+        @kb.add("c-u", filter=commands)
+        @kb.add("pageup", filter=commands)
         def page_up(event):
-            """Move cursor up 10 items."""
-            if self.show_help or self.show_extensions:
-                self.overlay_cursor = max(
-                    0,
-                    min(
-                        explorer_render.overlay_length(self) - 1,
-                        self.overlay_cursor - 10,
-                    ),
-                )
-                return
-            self.cursor = max(0, self.cursor - 10)
+            self.move(-10)
 
-        @kb.add("c-d")
-        @kb.add("pagedown")
+        @kb.add("c-d", filter=commands)
+        @kb.add("pagedown", filter=commands)
         def page_down(event):
-            """Move cursor down 10 items."""
-            if self.show_help or self.show_extensions:
-                self.overlay_cursor = max(
-                    0,
-                    min(
-                        explorer_render.overlay_length(self) - 1,
-                        self.overlay_cursor + 10,
-                    ),
-                )
-                return
-            display_items = self._get_display_items()
-            if display_items:
-                self.cursor = min(len(display_items) - 1, self.cursor + 10)
+            self.move(10)
 
-        @kb.add("i")
+        @kb.add("i", filter=commands)
         def toggle_info(event):
-            """Toggle info panel for current item."""
-            if self.filter_mode:
-                self.filter_text += "i"
-                return
-            if self.age_filter_mode:
-                return
             self.show_info_panel = not self.show_info_panel
 
-        @kb.add("q")
+        @kb.add("q", filter=commands)
         def quit_app(event):
             if self.selected and not self._quit_warned:
                 self.status_message = (
                     "Warning: You have items selected. Press q again to quit."
                 )
                 self._quit_warned = True
-                return  # Don't exit yet
+                return
             event.app.exit(result="quit")
 
         @kb.add("escape")
         def escape_handler(event):
-            # Handle age filter mode first
+
             if self.age_filter_mode:
                 self.age_filter_mode = False
                 self.age_filter_input = ""
                 return
-            # Handle filter mode
+
             if self.filter_mode:
                 self.filter_mode = False
                 self.filter_text = ""
                 return
-            # Clear active filter
+
             if self.filtered_items is not None:
                 self._clear_filter()
                 self.status_message = "Filter cleared"
                 return
-            # Close overlays if open, otherwise quit
+
             if self.show_extensions:
                 self.show_extensions = False
             elif self.show_help:
@@ -840,7 +609,7 @@ class DiskExplorerUI:
                         "Warning: You have items selected. Press Esc again to quit."
                     )
                     self._quit_warned = True
-                    return  # Don't exit yet
+                    return
                 event.app.exit(result="quit")
 
         @kb.add("c-c")
@@ -849,30 +618,30 @@ class DiskExplorerUI:
             event.app.exit(result="quit")
             raise KeyboardInterrupt()
 
-        @kb.add("?")
+        @kb.add("?", filter=commands)
         def toggle_help(event):
             self.overlay_cursor = 0
             self.show_help = not self.show_help
 
         @kb.add("<any>")
         def handle_any_key(event):
-            """Handle any key - for filter mode input, age filter input, and closing help."""
             if self.show_help:
                 self.show_help = False
                 return
             if self.age_filter_mode:
-                # Only accept digit input for age filter
                 key = event.data
                 if key and len(key) == 1 and key.isdigit():
                     self.age_filter_input += key
                 return
             if self.filter_mode:
-                # Add printable characters to filter text
                 key = event.data
                 if key and len(key) == 1 and key.isprintable():
                     self.filter_text += key
 
-        # Styles
+        return kb
+
+    def run(self, *, refresh: bool = True) -> set[Path]:
+
         style = Style.from_dict(
             {
                 "path": "bold cyan",
@@ -893,46 +662,54 @@ class DiskExplorerUI:
                 "status": "italic fg:ansicyan",
                 "dim": "dim",
                 "bookmark-hint": "fg:ansigreen",
-                # Breadcrumb styles
                 "breadcrumb": "fg:ansicyan",
                 "breadcrumb-sep": "dim fg:ansiwhite",
                 "breadcrumb-dim": "dim",
                 "breadcrumb-current": "bold fg:ansicyan",
-                # Info panel styles
                 "info-header": "bold fg:ansimagenta",
                 "info-label": "bold fg:ansiwhite",
                 "info-value": "fg:ansicyan",
                 "info-dim": "dim",
-                # Overlay styles
                 "overlay-border": "bold fg:ansicyan",
                 "overlay-header": "bold fg:ansimagenta",
                 "overlay-row": "fg:ansiwhite",
                 "overlay-row-dim": "dim fg:ansiwhite",
                 "overlay-total": "bold fg:ansiwhite",
                 "overlay-help": "dim italic fg:ansicyan",
-                # Filter styles
                 "filter-input": "bold fg:ansiyellow",
                 "filter-active": "fg:ansiyellow",
                 **THEME,
             }
         )
 
-        view = ViewLayout(self._get_content)
+        view = self._view
         self._app = TerminalApplication(
             layout=view.layout,
-            key_bindings=kb,
+            key_bindings=self.key_bindings(),
             color_depth=ColorDepth.TRUE_COLOR,
             style=style,
             full_screen=True,
             mouse_support=True,
         )
-        self._app.pre_run_callables.append(self._scan_current_directory)
+        if not refresh:
+            self._app.pre_run_callables.append(
+                lambda: setattr(
+                    view.body, "vertical_scroll", getattr(self, "_scroll", 0)
+                )
+            )
+        self.cancelled = False
+        self._quit_warned = False
+        self._app.pre_run_callables.append(
+            self._scan_current_directory
+            if refresh or self.listing
+            else self._start_lazy_loading
+        )
 
-        # Run
         try:
             result = self._app.run()
         finally:
             # Also discard callbacks queued just before an exceptional exit.
+            self._scroll = view.body.vertical_scroll
             self._stop_loading.set()
             self._scan_generation += 1
             self.explorer.kill_active_processes()
@@ -941,6 +718,3 @@ class DiskExplorerUI:
         if result == "delete":
             return self.selected
         return set()
-
-    def _show_selection_view(self) -> None:
-        explorer_render.show_selection_view(self)

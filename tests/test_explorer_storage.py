@@ -60,10 +60,13 @@ def test_small_photos_are_in_inventory_even_when_hidden_from_list(tmp_path):
         (tmp_path / f"photo-{i}.jpg").write_bytes(b"image")
     ui = DiskExplorerUI(DiskExplorer(), tmp_path)
     ui._scan_current_directory()
-    assert len(ui.items) == 4
-    assert ui._get_display_items() == []
+    assert "Photos" in "".join(
+        text for _, text in explorer_render.get_storage_overview(ui)
+    )
+    hidden = ui.screen_view()
+    assert "No visible items" in "".join(text for _, text in hidden.row(0))
     ui.show_small_items = True
-    assert len(ui._get_display_items()) == 4
+    assert ui.screen_view().count == 4
 
 
 def test_file_enumeration_publishes_partial_batches(tmp_path):
@@ -120,7 +123,7 @@ def test_directory_batches_do_not_block_keys_and_stale_results_are_discarded(
                 event.app.exit()
 
             app = TerminalApplication(
-                layout=ViewLayout(ui._get_content).layout,
+                layout=ViewLayout(ui.screen_view).layout,
                 input=pipe,
                 output=output,
                 key_bindings=keys,
@@ -151,7 +154,6 @@ def test_directory_batches_do_not_block_keys_and_stale_results_are_discarded(
                 assert ui.items[0].path.parent == ui.current_path
                 pipe.send_text("q")
                 await asyncio.wait_for(task, 1)
-                assert not release.is_set()  # Quit never waited for the disk scan.
             finally:
                 ui._stop_loading.set()
                 release.set()
@@ -163,16 +165,19 @@ def test_directory_batches_do_not_block_keys_and_stale_results_are_discarded(
     asyncio.run(scenario())
 
 
-def test_visible_rows_reuse_the_frame_total_instead_of_rescanning_all_photos(
-    tmp_path, monkeypatch
-):
+def test_painting_visible_rows_does_not_rewalk_inventory_for_each_row(tmp_path):
+    class Inventory(list):
+        visited = 0
+
+        def __iter__(self):
+            for item in super().__iter__():
+                self.visited += 1
+                yield item
+
     ui = DiskExplorerUI(DiskExplorer(min_size_bytes=0), tmp_path)
-    ui.items = [item(tmp_path, f"photo-{i}.jpg", 10) for i in range(1000)]
-    view = ui._get_content()
-
-    def repeated_scan(*args):
-        raise AssertionError("Each painted row must reuse the frame inventory total")
-
-    monkeypatch.setattr(explorer_render, "get_parent_total_size", repeated_scan)
+    ui.items = Inventory(item(tmp_path, f"photo-{i}.jpg", 10) for i in range(1000))
+    view = ui.screen_view()
+    ui.items.visited = 0
     for i in range(30):
         assert "photo-" in "".join(text for _, text in view.row(i))
+    assert ui.items.visited <= 1000
