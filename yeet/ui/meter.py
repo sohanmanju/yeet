@@ -171,7 +171,6 @@ def disk_overview(path: Path) -> FormattedText:
         ("class:help", f" used of {format_size(usage.total)}  ·  {percent}% full\n"),
     ]
     lines.extend(dot_meter(segments, usage.total))
-    lines.extend(legend([*segments, Segment("Free", usage.free, MUTED)]))
     return FormattedText(lines)
 
 

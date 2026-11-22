@@ -10,10 +10,11 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from .application import TerminalApplication
-from .chrome import key_hints, screen_title
-from .geometry import content_width, fit, terminal_size
+from .chrome import key_hints
+from .geometry import content_width, fit
 from .meter import THEME, disk_overview
 from .view import ScreenView, ViewLayout
 
@@ -38,25 +39,26 @@ class WorkflowMenu:
         self.cancelled = False
 
     def _get_header(self) -> FormattedText:
-        return screen_title("Reclaim your space")
+        return FormattedText([("class:brand", "  yeet\n\n")])
 
     def _get_row(self, idx: int) -> FormattedText:
         option = self.options[idx]
         width = content_width()
-        label_width = min(22, max(len(option.label) for option in self.options))
         focused = idx == self.cursor
         style = "class:cursor" if focused else "class:normal"
         prefix = f"  {'›' if focused else ' '} "
-        if width < label_width + 24:
+        label_width = min(24, max(get_cwidth(item.label) for item in self.options))
+        description_width = width - 2 - label_width - 3
+        if description_width < 20:
             return FormattedText([(style, prefix + fit(option.label, width - 2))])
         return FormattedText(
             [
-                (style, prefix + fit(option.label, label_width) + "  "),
+                (style, prefix + fit(option.label, label_width) + "   "),
                 (
                     "class:menu-description-focus"
                     if focused
                     else "class:menu-description",
-                    fit(option.description, width - label_width - 4),
+                    fit(option.description, description_width),
                 ),
             ]
         )
@@ -64,31 +66,8 @@ class WorkflowMenu:
     def _get_content(self) -> ScreenView:
         header = list(self._get_header())
         header.extend(disk_overview(Path.home()))
-        header.extend(
-            [
-                ("", "\n"),
-                (
-                    "class:header",
-                    "  " + fit(self.title, content_width()).rstrip() + "\n",
-                ),
-            ]
-        )
-        footer = []
-        if self.options and terminal_size().rows >= 18:
-            option = self.options[self.cursor]
-            label_width = min(22, max(len(item.label) for item in self.options))
-            if content_width() < label_width + 24:
-                footer.append(
-                    (
-                        "class:detail",
-                        "  " + fit(option.description, content_width()).rstrip() + "\n",
-                    )
-                )
-            guidance = WORKFLOW_GUIDANCE.get(option.key, "Enter opens this workflow")
-            footer.append(
-                ("class:detail", "  " + fit(guidance, content_width()).rstrip() + "\n")
-            )
-        footer.extend(key_hints([("Enter", "open"), ("↑↓", "move"), ("q", "quit")]))
+        header.append(("", "\n"))
+        footer = key_hints([("Enter", "open"), ("↑↓", "move"), ("q", "quit")])
         return ScreenView(
             FormattedText(header),
             len(self.options),
@@ -155,20 +134,6 @@ class WorkflowMenu:
         return (
             "quit" if self.cancelled or self.selected_key is None else self.selected_key
         )
-
-
-WORKFLOW_GUIDANCE = {
-    "projects": "Review activity and size before choosing projects to remove.",
-    "files": "Compare large files and their locations, then review your selection.",
-    "caches": "Inspect app and tool caches. Cleared caches may need to download or rebuild.",
-    "purge": "Keep source code; review generated outputs and dependencies to remove.",
-    "installer": "Review downloaded disk images and installation packages.",
-    "leftovers": "Review app ownership and paths before removing leftover data.",
-    "xcode": "Compare versions; select-all keeps items marked Latest.",
-    "explore": "Not sure where to start? Browse folders by size to find what's taking space.",
-    "history": "See what previous cleanup runs removed and how much space they reclaimed.",
-    "quit": "Return to your terminal.",
-}
 
 
 def build_workflow_menu_options(
